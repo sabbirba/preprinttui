@@ -744,33 +744,32 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
     );
     frame.render_widget(search_bar, chunks[0]);
 
-    let (headers, widths): (Vec<&str>, Vec<Constraint>) = if area.width >= 100 {
+    let (headers, widths): (Vec<&str>, Vec<Constraint>) = if area.width >= 90 {
         (
-            vec!["ID", "STUDENT", "FILENAME", "IP", "SIZE", "STATUS", "TIME"],
+            vec!["ID", "STUDENT", "IP", "SIZE", "STATUS", "TIME"],
             vec![
                 Constraint::Length(8),
-                Constraint::Percentage(16),
-                Constraint::Percentage(28),
-                Constraint::Percentage(16),
-                Constraint::Percentage(10),
-                Constraint::Percentage(10),
-                Constraint::Percentage(12),
+                Constraint::Percentage(24),
+                Constraint::Percentage(24),
+                Constraint::Percentage(14),
+                Constraint::Percentage(14),
+                Constraint::Percentage(24),
             ],
         )
-    } else if area.width >= 65 {
+    } else if area.width >= 60 {
         (
-            vec!["ID", "STUDENT", "FILENAME", "STATUS", "TIME"],
+            vec!["ID", "STUDENT", "SIZE", "STATUS", "TIME"],
             vec![
                 Constraint::Length(8),
-                Constraint::Percentage(25),
-                Constraint::Percentage(35),
-                Constraint::Percentage(15),
-                Constraint::Percentage(17),
+                Constraint::Percentage(32),
+                Constraint::Percentage(18),
+                Constraint::Percentage(18),
+                Constraint::Percentage(32),
             ],
         )
     } else {
         (
-            vec!["ID", "FILENAME", "STATUS"],
+            vec!["ID", "STUDENT", "STATUS"],
             vec![
                 Constraint::Length(8),
                 Constraint::Percentage(60),
@@ -821,23 +820,19 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
             Style::default().fg(Color::White),
         ))];
 
-        if area.width >= 65 {
-            cells.push(Cell::from(Span::styled(
-                h.student.as_deref().unwrap_or("-"),
-                Style::default().fg(Color::LightGreen),
-            )));
-        }
-
         cells.push(Cell::from(Span::styled(
-            h.file_name.as_deref().unwrap_or("-"),
-            Style::default().fg(Color::White),
+            h.student.as_deref().unwrap_or("-"),
+            Style::default().fg(Color::LightGreen),
         )));
 
-        if area.width >= 100 {
+        if area.width >= 90 {
             cells.push(Cell::from(Span::styled(
                 h.client_ip.as_deref().unwrap_or("-"),
                 Style::default().fg(Color::DarkGray),
             )));
+        }
+
+        if area.width >= 60 {
             cells.push(Cell::from(Span::styled(
                 fmt_bytes(h.size_bytes.unwrap_or(0)),
                 Style::default().fg(Color::White),
@@ -849,7 +844,7 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
             Style::default().fg(status_col),
         )));
 
-        if area.width >= 65 {
+        if area.width >= 60 {
             cells.push(Cell::from(Span::styled(
                 fmt_ts(h.timestamp.unwrap_or(0)),
                 Style::default().fg(Color::DarkGray),
@@ -888,7 +883,6 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
                 _ => "-".to_string(),
             })
             .unwrap_or_else(|| "-".to_string());
-        let file_str = h.file_name.as_deref().unwrap_or("?");
         let student_str = h.student.as_deref().unwrap_or("-");
         let status_str = h.status.as_deref().unwrap_or("-");
         let client_ip_str = h.client_ip.as_deref().unwrap_or("-");
@@ -900,13 +894,6 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
             vec![Line::from(vec![
                 Span::styled("ID: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(qid_str, Style::default().fg(Color::White)),
-                Span::styled("  • File: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    file_str,
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                ),
                 Span::styled("  • Student: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(student_str, Style::default().fg(Color::LightGreen)),
                 Span::styled("  • Status: ", Style::default().fg(Color::DarkGray)),
@@ -930,13 +917,6 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
                 Line::from(vec![
                     Span::styled("ID: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(qid_str, Style::default().fg(Color::White)),
-                    Span::styled("  • File: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        file_str,
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD),
-                    ),
                     Span::styled("  • Student: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(student_str, Style::default().fg(Color::LightGreen)),
                     Span::styled("  • Status: ", Style::default().fg(Color::DarkGray)),

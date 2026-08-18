@@ -2,6 +2,11 @@
 
 Active since `0.1.0`.
 
+### 0.1.2
+
+- Removed document print names/filenames from history view and inspector for student privacy.
+- Optimized column allocation across all terminal viewport breakpoints.
+
 ### 0.1.1
 
 - Fully purged blue and yellow colors across the entire user interface.
