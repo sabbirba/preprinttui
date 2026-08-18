@@ -162,21 +162,30 @@ jobs:
       - name: Restore Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Extract Changelog
-        id: changelog
+      - name: Generate Notes
         run: |
-          awk '/^### v/ { if (found) exit; found=1 } found' CHANGELOG.md > latest.md
-          echo "notes<<EOF" >> "$GITHUB_OUTPUT"
-          cat latest.md >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          VERSION="${{ needs.setup.outputs.version }}"
+          COMMIT_SHA="${{ github.sha }}"
+          COMMIT_URL="https://github.com/sabbirba/preprinttui/commit/${COMMIT_SHA}"
+
+          {
+            echo "# preprinttui Release Notes"
+            echo
+            echo "## Version"
+            echo "- Version: ${VERSION}"
+            echo "- Commit: [${COMMIT_SHA:0:7}](${COMMIT_URL})"
+            echo
+            echo "## Changes"
+            awk '/^### / { if (found) exit; found=1; next } found { print }' CHANGELOG.md
+          } > release-notes.md
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ needs.setup.outputs.tag }}
-          tag_name: ${{ needs.setup.outputs.tag }}
+          name: "${{ needs.setup.outputs.version }}"
+          tag_name: "${{ needs.setup.outputs.tag }}"
           target_commitish: ${{ github.sha }}
-          body: ${{ steps.changelog.outputs.notes }}
+          body_path: release-notes.md
 
       - name: Publish Crate
         if: ${{ env.CARGO_REGISTRY_TOKEN != '' }}
