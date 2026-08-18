@@ -29,12 +29,13 @@ Fast, interactive Terminal User Interface (TUI) for the [PreConnect](https://git
 
 ---
 
-### Quick Installation
+### Installation
 
 #### Homebrew (macOS & Linux)
 
 ```bash
 brew tap sabbirba/tap
+brew trust sabbirba/tap
 brew install preprinttui
 ```
 
@@ -76,7 +77,7 @@ Precompiled standalone binaries for Windows (`x86_64`), Linux (`x86_64-unknown-l
 ### Usage
 
 ```bash
-./preprinttui
+preprinttui
 ```
 
 ---
@@ -85,7 +86,7 @@ Precompiled standalone binaries for Windows (`x86_64`), Linux (`x86_64-unknown-l
 
 1. Start `preprinttui`:
    ```bash
-   ./preprinttui
+   preprinttui
    ```
 2. Public statistics load automatically in the inline header.
 3. If credentials were previously saved, `preprinttui` loads them securely from the system keychain / config store and authenticates immediately.
