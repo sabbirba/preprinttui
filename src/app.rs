@@ -321,6 +321,9 @@ impl App {
 }
 
 fn config_path() -> PathBuf {
+    if let Some(home) = dirs::home_dir() {
+        return home.join(".config").join("preprinttui").join("creds.json");
+    }
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("preprinttui")
@@ -328,63 +331,60 @@ fn config_path() -> PathBuf {
 }
 
 fn load_saved_credentials() -> (Option<String>, Option<String>) {
-    let k_key = Entry::new(KEYRING_SERVICE, KEYRING_WORKER_KEY)
-        .ok()
-        .and_then(|e| e.get_password().ok())
-        .filter(|s| !s.trim().is_empty());
-    let k_pwd = Entry::new(KEYRING_SERVICE, KEYRING_PASSWORD)
-        .ok()
-        .and_then(|e| e.get_password().ok())
-        .filter(|s| !s.trim().is_empty());
+    let mut key = None;
+    let mut pwd = None;
 
-    if k_key.is_some() || k_pwd.is_some() {
-        return (k_key, k_pwd);
+    if let Ok(e) = Entry::new(KEYRING_SERVICE, KEYRING_WORKER_KEY)
+        && let Ok(k) = e.get_password()
+        && !k.trim().is_empty()
+    {
+        key = Some(k);
+    }
+
+    if let Ok(e) = Entry::new(KEYRING_SERVICE, KEYRING_PASSWORD)
+        && let Ok(p) = e.get_password()
+        && !p.trim().is_empty()
+    {
+        pwd = Some(p);
     }
 
     let p = config_path();
-    if let Ok(data) = std::fs::read_to_string(&p)
+    if (key.is_none() || pwd.is_none())
+        && let Ok(data) = std::fs::read_to_string(&p)
         && let Ok(creds) = serde_json::from_str::<StoredCreds>(&data)
     {
-        return (
-            creds.worker_key.filter(|s| !s.trim().is_empty()),
-            creds.password.filter(|s| !s.trim().is_empty()),
-        );
+        if key.is_none() {
+            key = creds.worker_key.filter(|s| !s.trim().is_empty());
+        }
+        if pwd.is_none() {
+            pwd = creds.password.filter(|s| !s.trim().is_empty());
+        }
     }
 
-    (None, None)
+    (key, pwd)
 }
 
 fn save_credentials(worker_key: &Option<String>, password: &Option<String>) {
-    let mut kr_ok = true;
-
     if let Ok(e) = Entry::new(KEYRING_SERVICE, KEYRING_WORKER_KEY) {
         match worker_key {
             Some(k) if !k.trim().is_empty() => {
-                if e.set_password(k).is_err() {
-                    kr_ok = false;
-                }
+                let _ = e.set_password(k);
             }
             _ => {
                 let _ = e.delete_credential();
             }
         }
-    } else {
-        kr_ok = false;
     }
 
     if let Ok(e) = Entry::new(KEYRING_SERVICE, KEYRING_PASSWORD) {
         match password {
             Some(p) if !p.trim().is_empty() => {
-                if e.set_password(p).is_err() {
-                    kr_ok = false;
-                }
+                let _ = e.set_password(p);
             }
             _ => {
                 let _ = e.delete_credential();
             }
         }
-    } else {
-        kr_ok = false;
     }
 
     let p = config_path();
@@ -392,7 +392,7 @@ fn save_credentials(worker_key: &Option<String>, password: &Option<String>) {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    if !kr_ok {
+    if worker_key.is_some() || password.is_some() {
         let creds = StoredCreds {
             worker_key: worker_key.clone(),
             password: password.clone(),
