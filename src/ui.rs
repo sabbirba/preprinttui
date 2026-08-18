@@ -215,11 +215,6 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect, is_compact: bool) {
                     Color::DarkGray
                 }),
             ),
-            Span::styled("  •  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("{worker_count}w"),
-                Style::default().fg(Color::White),
-            ),
         ];
 
         if area.width >= 70 {

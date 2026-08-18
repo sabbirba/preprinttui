@@ -2,6 +2,10 @@
 
 Active since `0.1.0`.
 
+### 0.1.5
+
+- Cleaned right header telemetry by removing redundant worker count display.
+
 ### 0.1.4
 
 - Fixed credential persistence with reliable dual-storage across standard `~/.config/preprinttui/creds.json` and system keyring.
