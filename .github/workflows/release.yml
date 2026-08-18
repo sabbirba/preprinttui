@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.1.0)"
+        description: "Release Tag"
         required: false
         type: string
         default: ""
@@ -21,14 +21,9 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  SCCACHE_GHA_ENABLED: "true"
-  SCCACHE_CACHE_SIZE: 2G
-  RUSTC_WRAPPER: "sccache"
-
 jobs:
   setup:
-    name: Determine Version
+    name: Setup Version
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.ver.outputs.tag }}
@@ -36,9 +31,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
-      - name: Resolve Tag & Version
+      - name: Resolve Version
         id: ver
         run: |
           if [ -n "${{ inputs.tag }}" ]; then
@@ -49,145 +44,143 @@ jobs:
             CARGO_VER=$(grep '^version = ' Cargo.toml | head -n 1 | cut -d '"' -f 2)
             TAG="v${CARGO_VER}"
           fi
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
-  build-win:
-    name: Build Windows Binary
+  build-linux:
+    name: Build Linux
     needs: [setup]
-    runs-on: windows-latest
-
-    env:
-      FILE_NAME: target/release/preprinttui-win-x86_64.zip
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set Up Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-
-      - name: Cache Build Artifacts
-        uses: Swatinem/rust-cache@v2
-
-      - name: Set Up Sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Build
-        run: cargo build --release --quiet --locked
-
-      - name: Show Sccache Stats
-        run: sccache --show-stats || true
-
-      - name: Compress Binary
-        run: |
-          powershell -Command "Compress-Archive -Path target/release/preprinttui.exe -DestinationPath $env:FILE_NAME"
-
-      - name: Upload Compressed Binary to Release
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ${{ env.FILE_NAME }}
-          tag: ${{ needs.setup.outputs.tag }}
-          overwrite: true
-
-  build-unix:
-    name: Build Unix Binaries (${{ matrix.suffix }})
-    needs: [setup]
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            suffix: linux-musl-x86_64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            suffix: macos-arm64
-
-    runs-on: ${{ matrix.os }}
-
-    env:
-      FILE_NAME: target/release/preprinttui-${{ matrix.suffix }}.tar.gz
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set Up Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
-
-      - name: Cache Build Artifacts
-        uses: Swatinem/rust-cache@v2
-
-      - name: Set Up Sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Install musl Tools
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-
-      - name: Build
-        run: cargo build --release --quiet --locked --target ${{ matrix.target }}
-
-      - name: Show Sccache Stats
-        run: sccache --show-stats || true
-
-      - name: Compress Binary
-        run: |
-          tar -czf "${{ env.FILE_NAME }}" \
-            -C "target/${{ matrix.target }}/release" \
-            preprinttui
-
-      - name: Upload Compressed Binary to Release
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ${{ env.FILE_NAME }}
-          tag: ${{ needs.setup.outputs.tag }}
-          overwrite: true
-
-  publish:
-    name: Publish Release & Package
-    needs: [setup, build-win, build-unix]
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
-      - name: Cache Build Artifacts
+      - name: Install Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install Musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Restore Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Build Binary
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Compress Package
+        run: |
+          tar -czf target/release/preprinttui-linux-musl-x86_64.tar.gz \
+            -C target/x86_64-unknown-linux-musl/release preprinttui
+
+      - name: Upload Asset
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: target/release/preprinttui-linux-musl-x86_64.tar.gz
+          tag: ${{ needs.setup.outputs.tag }}
+          overwrite: true
+
+  build-macos:
+    name: Build macOS
+    needs: [setup]
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Restore Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Build Binary
+        run: cargo build --release --locked --target aarch64-apple-darwin
+
+      - name: Compress Package
+        run: |
+          tar -czf target/release/preprinttui-macos-arm64.tar.gz \
+            -C target/aarch64-apple-darwin/release preprinttui
+
+      - name: Upload Asset
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: target/release/preprinttui-macos-arm64.tar.gz
+          tag: ${{ needs.setup.outputs.tag }}
+          overwrite: true
+
+  build-windows:
+    name: Build Windows
+    needs: [setup]
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Set Up Sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Build Binary
+        run: cargo build --release --locked
 
-      - name: Show Sccache Stats
-        run: sccache --show-stats || true
+      - name: Compress Package
+        shell: powershell
+        run: |
+          Compress-Archive -Path target/release/preprinttui.exe -DestinationPath target/release/preprinttui-win-x86_64.zip
 
-      - name: Publish to Crates.io
-        if: env.CARGO_REGISTRY_TOKEN != ''
+      - name: Upload Asset
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: target/release/preprinttui-win-x86_64.zip
+          tag: ${{ needs.setup.outputs.tag }}
+          overwrite: true
+
+  publish:
+    name: Publish Release
+    needs: [setup, build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Publish Crate
+        if: ${{ env.CARGO_REGISTRY_TOKEN != '' }}
         run: cargo publish --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-      - name: Extract Latest Changelog
+      - name: Extract Changelog
         id: changelog
         run: |
           awk '/^### v/ { if (found) exit; found=1 } found' CHANGELOG.md > latest.md
-          echo "notes<<EOF" >> $GITHUB_OUTPUT
-          cat latest.md >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          echo "notes<<EOF" >> "$GITHUB_OUTPUT"
+          cat latest.md >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ needs.setup.outputs.tag }}

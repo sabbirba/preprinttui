@@ -25,43 +25,32 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  SCCACHE_GHA_ENABLED: "true"
-  SCCACHE_CACHE_SIZE: 2G
-  RUSTC_WRAPPER: "sccache"
-
 jobs:
-  rust:
-    name: Rust Quality & Test Checks
+  check:
+    name: Code Quality
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
-      - name: Set Up Rust
-        uses: actions-rs/toolchain@v1
+      - name: Install Toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
           components: rustfmt, clippy
-          override: true
 
-      - name: Cache Build Artifacts
+      - name: Restore Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Set Up Sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Verify Formatting
+      - name: Format Check
         run: cargo fmt --check
 
-      - name: Analyze with Clippy
+      - name: Run Clippy
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Run Tests
         run: cargo test
 
-      - name: Verify Release Build
+      - name: Build Release
         run: cargo build --release --locked
