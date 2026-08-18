@@ -1,0 +1,43 @@
+[package]
+name = "preprinttui"
+description = "Terminal User Interface (TUI) for PreConnect printer."
+authors = ["Sabbir Bin Abbas <mail@sabbirba.com>"]
+license = "GPL-3.0-only"
+version = "0.1.0"
+repository = "https://github.com/sabbirba/preprinttui"
+homepage = "https://preconnect.app"
+documentation = "https://github.com/sabbirba/preprinttui"
+readme = "README.md"
+keywords = ["preconnect", "printer", "tui", "ratatui", "terminal"]
+categories = ["command-line-utilities"]
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+base64 = "0.23.1"
+chrono = "0.4.40"
+crossterm = "0.28.1"
+hmac = "0.13.0"
+ratatui = "0.29.0"
+reqwest = { version = "0.13.4", features = ["json", "rustls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+keyring = "3.3"
+dirs = "6.0"
+tokio = { version = "1.43.0", features = ["full"] }
+
+[lints.clippy]
+unwrap_used = "deny"
+unreachable = "deny"
+must_use_candidate = "warn"
+
+[lints.rust]
+unused_must_use = "deny"
+
+[profile.release]
+opt-level = "z"
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
