@@ -24,6 +24,7 @@ struct FetchReq {
     tab: Tab,
     worker_key: Option<String>,
     password: Option<String>,
+    auto_refresh: bool,
 }
 
 #[tokio::main]
@@ -59,6 +60,7 @@ async fn main() -> Result<()> {
             tab: initial_tab,
             worker_key: None,
             password: None,
+            auto_refresh: true,
         };
 
         loop {
@@ -69,8 +71,10 @@ async fn main() -> Result<()> {
                     let _ = tx_data.send(data);
                 }
                 _ = interval.tick() => {
-                    let data = fetch_update(&client, last_req.tab, &last_req.worker_key, &last_req.password).await;
-                    let _ = tx_data.send(data);
+                    if last_req.auto_refresh {
+                        let data = fetch_update(&client, last_req.tab, &last_req.worker_key, &last_req.password).await;
+                        let _ = tx_data.send(data);
+                    }
                 }
             }
         }
@@ -80,6 +84,7 @@ async fn main() -> Result<()> {
         tab: app.tab,
         worker_key: app.worker_key.clone(),
         password: app.password.clone(),
+        auto_refresh: app.auto_refresh,
     });
 
     enable_raw_mode()?;
@@ -90,6 +95,8 @@ async fn main() -> Result<()> {
     let tick_rate = Duration::from_millis(TICK_RATE_MS);
 
     loop {
+        app.tick_count = app.tick_count.wrapping_add(1);
+
         while let Ok(data) = rx_data.try_recv() {
             app.apply_data(data);
         }
@@ -108,6 +115,7 @@ async fn main() -> Result<()> {
                             tab: app.tab,
                             worker_key: app.worker_key.clone(),
                             password: app.password.clone(),
+                            auto_refresh: app.auto_refresh,
                         });
                     }
                     KeyCode::Tab | KeyCode::Down | KeyCode::BackTab | KeyCode::Up => {
@@ -132,13 +140,49 @@ async fn main() -> Result<()> {
                 }
             } else if app.search_mode {
                 match key.code {
-                    KeyCode::Esc | KeyCode::Enter => app.search_mode = false,
+                    KeyCode::Esc | KeyCode::Enter => {
+                        app.search_mode = false;
+                    }
+                    KeyCode::Tab => {
+                        app.tab = match app.tab {
+                            Tab::Workers => Tab::History,
+                            Tab::History => Tab::Search,
+                            Tab::Search => Tab::Workers,
+                        };
+                        app.search_mode = app.tab == Tab::Search;
+                        app.is_loading = true;
+                        let _ = tx_req.send(FetchReq {
+                            tab: app.tab,
+                            worker_key: app.worker_key.clone(),
+                            password: app.password.clone(),
+                            auto_refresh: app.auto_refresh,
+                        });
+                    }
+                    KeyCode::BackTab => {
+                        app.tab = match app.tab {
+                            Tab::Workers => Tab::Search,
+                            Tab::History => Tab::Workers,
+                            Tab::Search => Tab::History,
+                        };
+                        app.search_mode = app.tab == Tab::Search;
+                        app.is_loading = true;
+                        let _ = tx_req.send(FetchReq {
+                            tab: app.tab,
+                            worker_key: app.worker_key.clone(),
+                            password: app.password.clone(),
+                            auto_refresh: app.auto_refresh,
+                        });
+                    }
+                    KeyCode::Down => app.next_item(),
+                    KeyCode::Up => app.prev_item(),
                     KeyCode::Backspace => {
                         app.search_query.pop();
+                        app.selected_worker = 0;
                         app.selected_history = 0;
                     }
                     KeyCode::Char(c) => {
                         app.search_query.push(c);
+                        app.selected_worker = 0;
                         app.selected_history = 0;
                     }
                     _ => {}
@@ -153,22 +197,25 @@ async fn main() -> Result<()> {
                 match key.code {
                     KeyCode::Char('1') => app.tab = Tab::Workers,
                     KeyCode::Char('2') => app.tab = Tab::History,
-                    KeyCode::Tab
-                    | KeyCode::BackTab
-                    | KeyCode::Char('l')
-                    | KeyCode::Char('h')
-                    | KeyCode::Right
-                    | KeyCode::Left => {
+                    KeyCode::Char('3') => app.tab = Tab::Search,
+                    KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => {
                         app.tab = match app.tab {
                             Tab::Workers => Tab::History,
+                            Tab::History => Tab::Search,
+                            Tab::Search => Tab::Workers,
+                        };
+                    }
+                    KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
+                        app.tab = match app.tab {
+                            Tab::Workers => Tab::Search,
                             Tab::History => Tab::Workers,
+                            Tab::Search => Tab::History,
                         };
                     }
                     KeyCode::Char('j') | KeyCode::Down => app.next_item(),
                     KeyCode::Char('k') | KeyCode::Up => app.prev_item(),
                     KeyCode::Char('/') => {
                         app.search_mode = true;
-                        app.tab = Tab::History;
                     }
                     KeyCode::Char('e') | KeyCode::Char('c') => {
                         app.open_auth_modal();
@@ -179,26 +226,42 @@ async fn main() -> Result<()> {
                             tab: app.tab,
                             worker_key: None,
                             password: None,
+                            auto_refresh: app.auto_refresh,
                         });
                     }
                     KeyCode::Char('r') => {
                         app.is_loading = true;
+                        app.set_toast("Refreshed");
                         let _ = tx_req.send(FetchReq {
                             tab: app.tab,
                             worker_key: app.worker_key.clone(),
                             password: app.password.clone(),
+                            auto_refresh: app.auto_refresh,
                         });
                     }
-                    KeyCode::Char('a') => app.auto_refresh = !app.auto_refresh,
+                    KeyCode::Char('a') => {
+                        app.auto_refresh = !app.auto_refresh;
+                        app.set_toast(if app.auto_refresh { "Auto" } else { "Paused" });
+                        let _ = tx_req.send(FetchReq {
+                            tab: app.tab,
+                            worker_key: app.worker_key.clone(),
+                            password: app.password.clone(),
+                            auto_refresh: app.auto_refresh,
+                        });
+                    }
                     _ => {}
                 }
 
                 if app.tab != prev_tab {
+                    if app.tab == Tab::Search {
+                        app.search_mode = true;
+                    }
                     app.is_loading = true;
                     let _ = tx_req.send(FetchReq {
                         tab: app.tab,
                         worker_key: app.worker_key.clone(),
                         password: app.password.clone(),
+                        auto_refresh: app.auto_refresh,
                     });
                 }
             }

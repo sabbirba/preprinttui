@@ -2,6 +2,15 @@
 
 Active since `0.1.0`.
 
+### 0.1.3
+
+- Redesigned with Charm and Bubble Tea design system and Lip Gloss monochrome aesthetics.
+- Added live 20 FPS animations including Braille spinner, blinking cursor, and status badge toasts.
+- Introduced dedicated Search tab with automatic query focus and multi-source worker and history matching.
+- Made inspector card responsive with zero overflow or text clipping across all viewport sizes.
+- Fixed basic authentication header encoding for seamless authorization against PreConnect API.
+- Replaced all multi-word titles and actions with strict single-word labels throughout.
+
 ### 0.1.2
 
 - Removed document print names/filenames from history view and inspector for student privacy.

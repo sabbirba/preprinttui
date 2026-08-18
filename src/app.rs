@@ -31,22 +31,7 @@ struct StoredCreds {
 pub enum Tab {
     Workers = 0,
     History = 1,
-}
-
-impl Tab {
-    pub fn label(self, count: usize) -> String {
-        match self {
-            Self::Workers => format!(" Active Workers ({count}) [1] "),
-            Self::History => format!(" Job History ({count}) [2] "),
-        }
-    }
-
-    pub fn short_label(self, count: usize) -> String {
-        match self {
-            Self::Workers => format!(" Workers ({count}) [1] "),
-            Self::History => format!(" History ({count}) [2] "),
-        }
-    }
+    Search = 2,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -86,6 +71,8 @@ pub struct App {
     pub is_loading: bool,
     pub is_unauthorized: bool,
     pub should_quit: bool,
+    pub tick_count: usize,
+    pub toast: Option<(String, Instant)>,
 }
 
 impl Default for App {
@@ -121,7 +108,31 @@ impl App {
             is_loading: true,
             is_unauthorized: false,
             should_quit: false,
+            tick_count: 0,
+            toast: None,
         }
+    }
+
+    pub fn set_toast(&mut self, msg: impl Into<String>) {
+        self.toast = Some((msg.into(), Instant::now()));
+    }
+
+    pub fn active_toast(&self) -> Option<&str> {
+        if let Some((msg, created)) = &self.toast
+            && created.elapsed().as_secs_f32() < 2.5
+        {
+            return Some(msg.as_str());
+        }
+        None
+    }
+
+    pub fn spinner(&self) -> &'static str {
+        const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        FRAMES[(self.tick_count / 2) % FRAMES.len()]
+    }
+
+    pub fn cursor_visible(&self) -> bool {
+        (self.tick_count / 8).is_multiple_of(2)
     }
 
     pub fn open_auth_modal(&mut self) {
@@ -137,16 +148,16 @@ impl App {
         } else {
             Some(self.input_worker_key.trim().to_string())
         };
-
         self.password = if self.input_password.trim().is_empty() {
             None
         } else {
             Some(self.input_password.trim().to_string())
         };
-
         save_credentials(&self.worker_key, &self.password);
-        self.is_loading = true;
         self.auth_mode = false;
+        self.status_msg = "Saved".to_string();
+        self.set_toast("Saved");
+        self.is_loading = true;
     }
 
     pub fn clear_credentials(&mut self) {
@@ -154,60 +165,79 @@ impl App {
         self.password = None;
         self.input_worker_key.clear();
         self.input_password.clear();
-        delete_saved_credentials();
-        self.status_msg = "Cleared credentials".to_string();
+        delete_credentials();
+        self.status_msg = "Cleared".to_string();
+        self.set_toast("Cleared");
+        self.is_loading = true;
     }
 
     pub fn realtime_uptime(&self) -> Option<u64> {
-        let (anchor_instant, anchor_secs) = self.uptime_anchor?;
-        Some(anchor_secs + anchor_instant.elapsed().as_secs())
+        let (anchor_time, base_uptime) = self.uptime_anchor?;
+        let elapsed = anchor_time.elapsed().as_secs();
+        Some(base_uptime.saturating_add(elapsed))
     }
 
     pub fn apply_data(&mut self, data: RefreshData) {
         self.is_loading = false;
+        self.is_unauthorized = data.is_unauthorized;
+        self.last_refresh = Some(data.timestamp);
 
-        if let Some(s) = data.stats {
-            if let Some(server_uptime) = s.uptime_seconds {
-                if let Some((anchor_instant, anchor_secs)) = self.uptime_anchor {
-                    let local_calc = anchor_secs + anchor_instant.elapsed().as_secs();
-                    if server_uptime.abs_diff(local_calc) > 2 {
-                        self.uptime_anchor = Some((Instant::now(), server_uptime));
+        if let Some(stats) = data.stats {
+            let new_uptime = stats.uptime_seconds.unwrap_or(0);
+            match self.uptime_anchor {
+                Some((_, current_base)) => {
+                    let drift = (new_uptime as i64 - current_base as i64).abs();
+                    if drift > 5 || new_uptime < current_base {
+                        self.uptime_anchor = Some((Instant::now(), new_uptime));
                     }
-                } else {
-                    self.uptime_anchor = Some((Instant::now(), server_uptime));
+                }
+                None => {
+                    self.uptime_anchor = Some((Instant::now(), new_uptime));
                 }
             }
-            self.stats = Some(s);
+            self.stats = Some(stats);
         }
 
         if let Some(w) = data.workers {
             self.workers = w;
-            if !self.workers.is_empty() && self.selected_worker >= self.workers.len() {
-                self.selected_worker = self.workers.len() - 1;
+            if self.selected_worker >= self.filtered_workers().len() {
+                self.selected_worker = self.filtered_workers().len().saturating_sub(1);
             }
         }
 
         if let Some(h) = data.history {
             self.history = h;
-            let count = self.filtered_history().len();
-            if count > 0 && self.selected_history >= count {
-                self.selected_history = count - 1;
+            if self.selected_history >= self.filtered_history().len() {
+                self.selected_history = self.filtered_history().len().saturating_sub(1);
             }
         }
 
-        self.is_unauthorized = data.is_unauthorized;
-        self.last_refresh = Some(data.timestamp);
-
         self.status_msg = if self.is_unauthorized {
-            "401 Unauthorized".to_string()
+            "Unauthorized".to_string()
         } else {
-            format!(
-                "Updated {}",
-                self.last_refresh
-                    .map(|t| t.format("%H:%M:%S").to_string())
-                    .unwrap_or_default()
-            )
+            self.last_refresh
+                .map(|t| t.format("%H:%M:%S").to_string())
+                .unwrap_or_default()
         };
+    }
+
+    pub fn filtered_workers(&self) -> Vec<&WorkerInfo> {
+        if self.search_query.is_empty() {
+            return self.workers.iter().collect();
+        }
+        let q = self.search_query.to_lowercase();
+        self.workers
+            .iter()
+            .filter(|w| {
+                w.id.as_deref().unwrap_or("").to_lowercase().contains(&q)
+                    || w.ip.as_deref().unwrap_or("").to_lowercase().contains(&q)
+                    || w.user_agent
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&q)
+            })
+            .collect()
     }
 
     pub fn filtered_history(&self) -> Vec<&HistoryEntry> {
@@ -218,16 +248,11 @@ impl App {
         self.history
             .iter()
             .filter(|h| {
-                h.file_name
+                h.student
                     .as_deref()
                     .unwrap_or("")
                     .to_lowercase()
                     .contains(&q)
-                    || h.student
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_lowercase()
-                        .contains(&q)
                     || h.status
                         .as_deref()
                         .unwrap_or("")
@@ -245,6 +270,17 @@ impl App {
                         .contains(&q)
                     || h.ip.as_deref().unwrap_or("").to_lowercase().contains(&q)
                     || h.queue.as_deref().unwrap_or("").to_lowercase().contains(&q)
+                    || h.queue_id
+                        .as_ref()
+                        .or(h.id.as_ref())
+                        .map(|v| match v {
+                            serde_json::Value::Number(n) => n.to_string(),
+                            serde_json::Value::String(s) => s.clone(),
+                            _ => String::new(),
+                        })
+                        .unwrap_or_default()
+                        .to_lowercase()
+                        .contains(&q)
             })
             .collect()
     }
@@ -252,11 +288,12 @@ impl App {
     pub fn next_item(&mut self) {
         match self.tab {
             Tab::Workers => {
-                if !self.workers.is_empty() {
-                    self.selected_worker = (self.selected_worker + 1).min(self.workers.len() - 1);
+                let count = self.filtered_workers().len();
+                if count > 0 {
+                    self.selected_worker = (self.selected_worker + 1).min(count - 1);
                 }
             }
-            Tab::History => {
+            Tab::History | Tab::Search => {
                 let count = self.filtered_history().len();
                 if count > 0 {
                     self.selected_history = (self.selected_history + 1).min(count - 1);
@@ -267,37 +304,45 @@ impl App {
 
     pub fn prev_item(&mut self) {
         match self.tab {
-            Tab::Workers => self.selected_worker = self.selected_worker.saturating_sub(1),
-            Tab::History => self.selected_history = self.selected_history.saturating_sub(1),
+            Tab::Workers => {
+                let count = self.filtered_workers().len();
+                if count > 0 {
+                    self.selected_worker = self.selected_worker.saturating_sub(1);
+                }
+            }
+            Tab::History | Tab::Search => {
+                let count = self.filtered_history().len();
+                if count > 0 {
+                    self.selected_history = self.selected_history.saturating_sub(1);
+                }
+            }
         }
     }
 }
 
-fn get_creds_file_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|mut p| {
-        p.push("preprinttui");
-        p.push("credentials.json");
-        p
-    })
+fn config_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("preprinttui")
+        .join("creds.json")
 }
 
-pub fn load_saved_credentials() -> (Option<String>, Option<String>) {
-    let kr_key = Entry::new(KEYRING_SERVICE, KEYRING_WORKER_KEY)
+fn load_saved_credentials() -> (Option<String>, Option<String>) {
+    let k_key = Entry::new(KEYRING_SERVICE, KEYRING_WORKER_KEY)
+        .ok()
+        .and_then(|e| e.get_password().ok())
+        .filter(|s| !s.trim().is_empty());
+    let k_pwd = Entry::new(KEYRING_SERVICE, KEYRING_PASSWORD)
         .ok()
         .and_then(|e| e.get_password().ok())
         .filter(|s| !s.trim().is_empty());
 
-    let kr_pwd = Entry::new(KEYRING_SERVICE, KEYRING_PASSWORD)
-        .ok()
-        .and_then(|e| e.get_password().ok())
-        .filter(|s| !s.trim().is_empty());
-
-    if kr_key.is_some() || kr_pwd.is_some() {
-        return (kr_key, kr_pwd);
+    if k_key.is_some() || k_pwd.is_some() {
+        return (k_key, k_pwd);
     }
 
-    if let Some(path) = get_creds_file_path()
-        && let Ok(data) = std::fs::read_to_string(path)
+    let p = config_path();
+    if let Ok(data) = std::fs::read_to_string(&p)
         && let Ok(creds) = serde_json::from_str::<StoredCreds>(&data)
     {
         return (
@@ -309,60 +354,79 @@ pub fn load_saved_credentials() -> (Option<String>, Option<String>) {
     (None, None)
 }
 
-pub fn save_credentials(worker_key: &Option<String>, password: &Option<String>) {
-    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_WORKER_KEY) {
-        if let Some(k) = worker_key {
-            let _ = entry.set_password(k);
-        } else {
-            let _ = entry.delete_credential();
-        }
-    }
+fn save_credentials(worker_key: &Option<String>, password: &Option<String>) {
+    let mut kr_ok = true;
 
-    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_PASSWORD) {
-        if let Some(p) = password {
-            let _ = entry.set_password(p);
-        } else {
-            let _ = entry.delete_credential();
-        }
-    }
-
-    if let Some(path) = get_creds_file_path() {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-            #[cfg(unix)]
-            {
-                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+    if let Ok(e) = Entry::new(KEYRING_SERVICE, KEYRING_WORKER_KEY) {
+        match worker_key {
+            Some(k) if !k.trim().is_empty() => {
+                if e.set_password(k).is_err() {
+                    kr_ok = false;
+                }
+            }
+            _ => {
+                let _ = e.delete_credential();
             }
         }
-        let stored = StoredCreds {
+    } else {
+        kr_ok = false;
+    }
+
+    if let Ok(e) = Entry::new(KEYRING_SERVICE, KEYRING_PASSWORD) {
+        match password {
+            Some(p) if !p.trim().is_empty() => {
+                if e.set_password(p).is_err() {
+                    kr_ok = false;
+                }
+            }
+            _ => {
+                let _ = e.delete_credential();
+            }
+        }
+    } else {
+        kr_ok = false;
+    }
+
+    let p = config_path();
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    if !kr_ok {
+        let creds = StoredCreds {
             worker_key: worker_key.clone(),
             password: password.clone(),
         };
-        if let Ok(json) = serde_json::to_string(&stored) {
-            let _ = std::fs::write(&path, json);
+        if let Ok(json) = serde_json::to_string(&creds) {
+            let _ = std::fs::write(&p, json);
             #[cfg(unix)]
             {
-                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+                let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
             }
         }
+    } else if p.exists() {
+        let _ = std::fs::remove_file(&p);
     }
 }
 
-pub fn delete_saved_credentials() {
-    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_WORKER_KEY) {
-        let _ = entry.delete_credential();
+fn delete_credentials() {
+    if let Ok(e) = Entry::new(KEYRING_SERVICE, KEYRING_WORKER_KEY) {
+        let _ = e.delete_credential();
     }
-    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_PASSWORD) {
-        let _ = entry.delete_credential();
+    if let Ok(e) = Entry::new(KEYRING_SERVICE, KEYRING_PASSWORD) {
+        let _ = e.delete_credential();
     }
-    if let Some(path) = get_creds_file_path() {
-        let _ = std::fs::remove_file(path);
+    let p = config_path();
+    if p.exists() {
+        let _ = std::fs::remove_file(&p);
     }
 }
 
-pub fn make_headers(worker_key: &Option<String>, password: &Option<String>) -> HeaderMap {
+fn make_headers(worker_key: &Option<String>, password: &Option<String>) -> HeaderMap {
     let mut map = HeaderMap::new();
-    if let Some(key) = worker_key {
+    if let Some(key) = worker_key
+        && !key.trim().is_empty()
+    {
         let jwt = make_jwt(key);
         if let Ok(v) = HeaderValue::from_str(&format!("Bearer {jwt}")) {
             map.insert("Authorization", v);
@@ -370,17 +434,23 @@ pub fn make_headers(worker_key: &Option<String>, password: &Option<String>) -> H
         if let Ok(v) = HeaderValue::from_str(key) {
             map.insert("X-Worker-Key", v);
         }
-        if let Ok(v) = HeaderValue::from_str("preprinttui/1.0") {
-            map.insert("X-Worker-Ident", v);
-        }
-    } else if let Some(pwd) = password {
-        let enc = STANDARD.encode(format!("{pwd}:{pwd}"));
-        if let Ok(v) = HeaderValue::from_str(&format!("Basic {enc}")) {
+    }
+    if let Some(pwd) = password
+        && !pwd.trim().is_empty()
+    {
+        if !map.contains_key("Authorization")
+            && let Ok(v) = HeaderValue::from_str(&format!(
+                "Basic {}",
+                STANDARD.encode(format!("{pwd}:{pwd}"))
+            ))
+        {
             map.insert("Authorization", v);
         }
         if let Ok(v) = HeaderValue::from_str(pwd) {
-            map.insert("X-Worker-Key", v.clone());
-            map.insert("X-Print-Password", v);
+            map.insert("X-Print-Password", v.clone());
+            if !map.contains_key("X-Worker-Key") {
+                map.insert("X-Worker-Key", v);
+            }
         }
         if let Ok(v) = HeaderValue::from_str("preprinttui/1.0") {
             map.insert("X-Worker-Ident", v);
@@ -403,27 +473,26 @@ pub async fn fetch_update(
     let ms = Utc::now().timestamp_millis();
     let url = DEFAULT_URL.trim_end_matches('/');
 
-    if let Ok(resp) = client
-        .get(format!("{url}/print/stats?_t={ms}&ms={ms}"))
-        .headers(hdrs.clone())
-        .send()
-        .await
-    {
-        if resp.status() == StatusCode::UNAUTHORIZED {
-            unauth = true;
-        } else if let Ok(s) = resp.json::<PrintStats>().await {
-            stats = Some(s);
-        }
-    }
-
     match tab {
         Tab::Workers => {
-            if let Ok(resp) = client
-                .get(format!("{url}/print/active?_t={ms}"))
-                .headers(hdrs.clone())
-                .send()
-                .await
-            {
+            let (stats_res, active_res) = tokio::join!(
+                client
+                    .get(format!("{url}/print/stats?_t={ms}&ms={ms}"))
+                    .headers(hdrs.clone())
+                    .send(),
+                client
+                    .get(format!("{url}/print/active?_t={ms}"))
+                    .headers(hdrs)
+                    .send(),
+            );
+            if let Ok(resp) = stats_res {
+                if resp.status() == StatusCode::UNAUTHORIZED {
+                    unauth = true;
+                } else if let Ok(s) = resp.json::<PrintStats>().await {
+                    stats = Some(s);
+                }
+            }
+            if let Ok(resp) = active_res {
                 if resp.status() == StatusCode::UNAUTHORIZED {
                     unauth = true;
                     workers = Some(Vec::new());
@@ -433,12 +502,63 @@ pub async fn fetch_update(
             }
         }
         Tab::History => {
-            if let Ok(resp) = client
-                .get(format!("{url}/print/history?_t={ms}"))
-                .headers(hdrs)
-                .send()
-                .await
-            {
+            let (stats_res, history_res) = tokio::join!(
+                client
+                    .get(format!("{url}/print/stats?_t={ms}&ms={ms}"))
+                    .headers(hdrs.clone())
+                    .send(),
+                client
+                    .get(format!("{url}/print/history?_t={ms}"))
+                    .headers(hdrs)
+                    .send(),
+            );
+            if let Ok(resp) = stats_res {
+                if resp.status() == StatusCode::UNAUTHORIZED {
+                    unauth = true;
+                } else if let Ok(s) = resp.json::<PrintStats>().await {
+                    stats = Some(s);
+                }
+            }
+            if let Ok(resp) = history_res {
+                if resp.status() == StatusCode::UNAUTHORIZED {
+                    unauth = true;
+                    history = Some(Vec::new());
+                } else if let Ok(h) = resp.json::<Vec<HistoryEntry>>().await {
+                    history = Some(h);
+                }
+            }
+        }
+        Tab::Search => {
+            let (stats_res, active_res, history_res) = tokio::join!(
+                client
+                    .get(format!("{url}/print/stats?_t={ms}&ms={ms}"))
+                    .headers(hdrs.clone())
+                    .send(),
+                client
+                    .get(format!("{url}/print/active?_t={ms}"))
+                    .headers(hdrs.clone())
+                    .send(),
+                client
+                    .get(format!("{url}/print/history?_t={ms}"))
+                    .headers(hdrs)
+                    .send(),
+            );
+            if let Ok(resp) = stats_res {
+                if resp.status() == StatusCode::UNAUTHORIZED {
+                    unauth = true;
+                } else if let Ok(s) = resp.json::<PrintStats>().await {
+                    stats = Some(s);
+                }
+            }
+            if let Ok(resp) = active_res {
+                if resp.status() == StatusCode::UNAUTHORIZED {
+                    unauth = true;
+                    workers = Some(Vec::new());
+                } else if let Ok(w) = resp.json::<Vec<WorkerInfo>>().await {
+                    workers = Some(w);
+                }
+            }
+            if let Ok(resp) = history_res {
                 if resp.status() == StatusCode::UNAUTHORIZED {
                     unauth = true;
                     history = Some(Vec::new());
