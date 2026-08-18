@@ -28,6 +28,19 @@ struct FetchReq {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "-v" || a == "--version") {
+        println!("preprinttui {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        println!(
+            "preprinttui {}\nInteractive TUI for PreConnect printer.\n\nUSAGE:\n    preprinttui\n\nFLAGS:\n    -h, --help       Print help information\n    -v, --version    Print version information",
+            env!("CARGO_PKG_VERSION")
+        );
+        return Ok(());
+    }
+
     let mut app = App::new();
 
     let (tx_data, mut rx_data) = mpsc::unbounded_channel::<RefreshData>();

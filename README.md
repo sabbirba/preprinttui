@@ -29,7 +29,31 @@ Fast, interactive Terminal User Interface (TUI) for the [PreConnect](https://git
 
 ---
 
-### Installation & Compiling
+### Quick Installation
+
+#### Homebrew (macOS & Linux)
+
+```bash
+brew tap sabbirba/tap
+brew install preprinttui
+```
+
+To update anytime:
+```bash
+brew upgrade preprinttui
+```
+
+#### One-Line Installer (macOS, Linux & Android Termux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sabbirba/preprinttui/main/install.sh | bash
+```
+
+#### Cargo
+
+```bash
+cargo install preprinttui
+```
 
 #### From Source
 
@@ -42,12 +66,6 @@ cargo build --release
 ```
 
 The optimized binary will be available at `target/release/preprinttui`.
-
-#### Global Installation via Cargo
-
-```bash
-cargo install --path .
-```
 
 #### Prebuilt Binaries
 

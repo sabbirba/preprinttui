@@ -27,8 +27,34 @@ env:
   RUSTC_WRAPPER: "sccache"
 
 jobs:
+  setup:
+    name: Determine Version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      version: ${{ steps.ver.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve Tag & Version
+        id: ver
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            CARGO_VER=$(grep '^version = ' Cargo.toml | head -n 1 | cut -d '"' -f 2)
+            TAG="v${CARGO_VER}"
+          fi
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+
   build-win:
     name: Build Windows Binary
+    needs: [setup]
     runs-on: windows-latest
 
     env:
@@ -66,11 +92,12 @@ jobs:
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: ${{ env.FILE_NAME }}
-          tag: ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
+          tag: ${{ needs.setup.outputs.tag }}
           overwrite: true
 
   build-unix:
     name: Build Unix Binaries (${{ matrix.suffix }})
+    needs: [setup]
     strategy:
       matrix:
         include:
@@ -125,12 +152,12 @@ jobs:
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: ${{ env.FILE_NAME }}
-          tag: ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
+          tag: ${{ needs.setup.outputs.tag }}
           overwrite: true
 
   publish:
     name: Publish Release & Package
-    needs: [build-win, build-unix]
+    needs: [setup, build-win, build-unix]
     runs-on: ubuntu-latest
 
     steps:
@@ -166,5 +193,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
+          name: ${{ needs.setup.outputs.tag }}
+          tag_name: ${{ needs.setup.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           body: ${{ steps.changelog.outputs.notes }}
