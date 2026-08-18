@@ -34,9 +34,7 @@ Fast, interactive Terminal User Interface (TUI) for the [PreConnect](https://git
 #### Homebrew (macOS & Linux)
 
 ```bash
-brew tap sabbirba/tap
-brew trust sabbirba/tap
-brew install preprinttui
+brew install sabbirba/tap/preprinttui
 ```
 
 To update anytime:
