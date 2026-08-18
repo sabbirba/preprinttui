@@ -2,6 +2,13 @@
 
 Active since `0.1.0`.
 
+### 0.1.1
+
+- Fully purged blue and yellow colors across the entire user interface.
+- Adopted clean modern monochrome neutral palette with soft dark charcoal row selection.
+- Refined table headers, uptime telemetry, worker inspector, and job history details.
+- Clean release notes and commit tracking architecture.
+
 ### 0.1.0
 
 - Initial release of `preprinttui` for the PreConnect printer subsystem.

@@ -57,7 +57,7 @@ pub fn render_ui(app: &App, frame: &mut Frame) {
             x = area.width,
             y = area.height
         ))
-        .style(Style::default().fg(Color::Yellow));
+        .style(Style::default().fg(Color::White));
         frame.render_widget(msg, area);
         return;
     }
@@ -85,7 +85,7 @@ pub fn render_ui(app: &App, frame: &mut Frame) {
         Line::from(vec![
             Span::styled(
                 " Tab/Down ",
-                Style::default().fg(Color::Black).bg(Color::Cyan),
+                Style::default().fg(Color::Black).bg(Color::White),
             ),
             Span::styled(" Next ", Style::default().fg(Color::White)),
             Span::styled(
@@ -103,15 +103,15 @@ pub fn render_ui(app: &App, frame: &mut Frame) {
         Line::from(vec![
             Span::styled(
                 " Esc/Enter ",
-                Style::default().fg(Color::Black).bg(Color::Yellow),
+                Style::default().fg(Color::Black).bg(Color::White),
             ),
             Span::styled(" Exit Search ", Style::default().fg(Color::White)),
         ])
     } else if area.width < 60 {
         Line::from(vec![
-            Span::styled(" 1-2 ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+            Span::styled(" 1-2 ", Style::default().fg(Color::Black).bg(Color::White)),
             Span::styled(" Tab ", Style::default().fg(Color::White)),
-            Span::styled(" • e ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(" • e ", Style::default().fg(Color::Black).bg(Color::White)),
             Span::styled(" Auth ", Style::default().fg(Color::White)),
             Span::styled(
                 " • q ",
@@ -123,21 +123,30 @@ pub fn render_ui(app: &App, frame: &mut Frame) {
         Line::from(vec![
             Span::styled(
                 " 1-2/Tab ",
-                Style::default().fg(Color::Black).bg(Color::Cyan),
+                Style::default().fg(Color::Black).bg(Color::White),
             ),
             Span::styled(" View ", Style::default().fg(Color::White)),
-            Span::styled(" • e ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(" • e ", Style::default().fg(Color::Black).bg(Color::White)),
             Span::styled(" Auth ", Style::default().fg(Color::White)),
             Span::styled(
                 " • x ",
-                Style::default().fg(Color::Black).bg(Color::Magenta),
+                Style::default().fg(Color::Black).bg(Color::DarkGray),
             ),
             Span::styled(" Clear ", Style::default().fg(Color::White)),
-            Span::styled(" • j/k ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+            Span::styled(
+                " • j/k ",
+                Style::default().fg(Color::Black).bg(Color::DarkGray),
+            ),
             Span::styled(" Move ", Style::default().fg(Color::White)),
-            Span::styled(" • / ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+            Span::styled(
+                " • / ",
+                Style::default().fg(Color::Black).bg(Color::DarkGray),
+            ),
             Span::styled(" Filter ", Style::default().fg(Color::White)),
-            Span::styled(" • r ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+            Span::styled(
+                " • r ",
+                Style::default().fg(Color::Black).bg(Color::DarkGray),
+            ),
             Span::styled(" Refresh ", Style::default().fg(Color::White)),
             Span::styled(
                 " • q ",
@@ -204,7 +213,7 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect, is_compact: bool) {
         .select(app.tab as usize)
         .highlight_style(
             Style::default()
-                .fg(Color::Yellow)
+                .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         )
         .divider(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
@@ -241,7 +250,7 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect, is_compact: bool) {
         ),
         Span::styled("• ", Style::default().fg(Color::DarkGray)),
         Span::styled("Uptime: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{uptime_str} "), Style::default().fg(Color::Yellow)),
+        Span::styled(format!("{uptime_str} "), Style::default().fg(Color::White)),
     ];
 
     let p_stats = Paragraph::new(Line::from(metrics));
@@ -284,7 +293,7 @@ fn render_auth_modal(app: &App, frame: &mut Frame, area: Rect) {
     let modal_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
-        .border_style(Style::default().fg(Color::Yellow))
+        .border_style(Style::default().fg(Color::White))
         .title(" [ Credentials ] ");
     frame.render_widget(modal_block, modal_area);
 
@@ -312,7 +321,7 @@ fn render_auth_modal(app: &App, frame: &mut Frame, area: Rect) {
             }),
         ),
         if f1_active {
-            Span::styled(" █", Style::default().fg(Color::Yellow))
+            Span::styled(" █", Style::default().fg(Color::White))
         } else {
             Span::raw("")
         },
@@ -322,7 +331,7 @@ fn render_auth_modal(app: &App, frame: &mut Frame, area: Rect) {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(if f1_active {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(Color::White)
             } else {
                 Style::default().fg(Color::DarkGray)
             })
@@ -342,7 +351,7 @@ fn render_auth_modal(app: &App, frame: &mut Frame, area: Rect) {
             }),
         ),
         if f2_active {
-            Span::styled(" █", Style::default().fg(Color::Yellow))
+            Span::styled(" █", Style::default().fg(Color::White))
         } else {
             Span::raw("")
         },
@@ -352,7 +361,7 @@ fn render_auth_modal(app: &App, frame: &mut Frame, area: Rect) {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(if f2_active {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(Color::White)
             } else {
                 Style::default().fg(Color::DarkGray)
             })
@@ -362,7 +371,7 @@ fn render_auth_modal(app: &App, frame: &mut Frame, area: Rect) {
 
     let hint = Paragraph::new(Line::from(vec![Span::styled(
         "Tab: Next • Enter: Save • Esc: Cancel",
-        Style::default().fg(Color::Cyan),
+        Style::default().fg(Color::White),
     )]));
     frame.render_widget(hint, chunks[2]);
 }
@@ -397,7 +406,7 @@ fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
         let p = Paragraph::new(Span::styled(
             msg,
             Style::default()
-                .fg(Color::Yellow)
+                .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ))
         .alignment(Alignment::Center);
@@ -470,7 +479,7 @@ fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
         Cell::from(Span::styled(
             h,
             Style::default()
-                .fg(Color::Yellow)
+                .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ))
     }))
@@ -481,7 +490,7 @@ fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
         let sel = idx == app.selected_worker;
         let st = if sel {
             Style::default()
-                .bg(Color::Rgb(25, 45, 75))
+                .bg(Color::Rgb(40, 40, 45))
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
@@ -489,7 +498,7 @@ fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
 
         let mut cells = vec![Cell::from(Span::styled(
             w.id.as_deref().unwrap_or("-"),
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(Color::White),
         ))];
 
         if area.width >= 50 {
@@ -516,7 +525,7 @@ fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
                 w.age_seconds
                     .map(fmt_dur)
                     .unwrap_or_else(|| "-".to_string()),
-                Style::default().fg(Color::LightYellow),
+                Style::default().fg(Color::DarkGray),
             )));
         }
 
@@ -550,40 +559,40 @@ fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
 
         let detail_lines = if is_single_line {
             vec![Line::from(vec![
-                Span::styled("Ident: ", Style::default().fg(Color::Yellow)),
+                Span::styled("Ident: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     id_str,
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("  • IP: ", Style::default().fg(Color::Yellow)),
+                Span::styled("  • IP: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(ip_str, Style::default().fg(Color::White)),
-                Span::styled("  • Status: ", Style::default().fg(Color::Yellow)),
+                Span::styled("  • Status: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     "ONLINE",
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("  • Agent: ", Style::default().fg(Color::Yellow)),
+                Span::styled("  • Agent: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(agent_str, Style::default().fg(Color::Gray)),
-                Span::styled("  • Jobs: ", Style::default().fg(Color::Yellow)),
+                Span::styled("  • Jobs: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(jobs_str, Style::default().fg(Color::LightGreen)),
             ])]
         } else {
             vec![
                 Line::from(vec![
-                    Span::styled("Ident: ", Style::default().fg(Color::Yellow)),
+                    Span::styled("Ident: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(
                         id_str,
                         Style::default()
                             .fg(Color::White)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled("  • IP: ", Style::default().fg(Color::Yellow)),
+                    Span::styled("  • IP: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(ip_str, Style::default().fg(Color::White)),
-                    Span::styled("  • Status: ", Style::default().fg(Color::Yellow)),
+                    Span::styled("  • Status: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(
                         "ONLINE",
                         Style::default()
@@ -592,9 +601,9 @@ fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
                     ),
                 ]),
                 Line::from(vec![
-                    Span::styled("Agent: ", Style::default().fg(Color::Yellow)),
+                    Span::styled("Agent: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(agent_str, Style::default().fg(Color::Gray)),
-                    Span::styled("  • Jobs: ", Style::default().fg(Color::Yellow)),
+                    Span::styled("  • Jobs: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(jobs_str, Style::default().fg(Color::LightGreen)),
                 ]),
             ]
@@ -604,7 +613,7 @@ fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::Cyan))
+                .border_style(Style::default().fg(Color::DarkGray))
                 .title(" Selected Worker "),
         );
         frame.render_widget(detail, chunks[1]);
@@ -643,7 +652,7 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
         let p = Paragraph::new(Span::styled(
             msg,
             Style::default()
-                .fg(Color::Yellow)
+                .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ))
         .alignment(Alignment::Center);
@@ -705,7 +714,7 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
     };
 
     let search_bar = Paragraph::new(Line::from(vec![
-        Span::styled("Query: ", Style::default().fg(Color::Cyan)),
+        Span::styled("Query: ", Style::default().fg(Color::White)),
         Span::styled(
             &app.search_query,
             Style::default()
@@ -713,7 +722,7 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         if app.search_mode {
-            Span::styled(" █", Style::default().fg(Color::Yellow))
+            Span::styled(" █", Style::default().fg(Color::White))
         } else {
             Span::raw("")
         },
@@ -723,7 +732,7 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(if app.search_mode {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(Color::White)
             } else {
                 Style::default().fg(Color::DarkGray)
             })
@@ -774,7 +783,7 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
         Cell::from(Span::styled(
             h,
             Style::default()
-                .fg(Color::Yellow)
+                .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ))
     }))
@@ -785,7 +794,7 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
         let sel = idx == app.selected_history;
         let st = if sel {
             Style::default()
-                .bg(Color::Rgb(25, 45, 75))
+                .bg(Color::Rgb(40, 40, 45))
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
@@ -804,12 +813,12 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
         let status_col = if status == "released" || status == "printed" {
             Color::Green
         } else {
-            Color::Yellow
+            Color::DarkGray
         };
 
         let mut cells = vec![Cell::from(Span::styled(
             qid,
-            Style::default().fg(Color::LightBlue),
+            Style::default().fg(Color::White),
         ))];
 
         if area.width >= 65 {
@@ -831,7 +840,7 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
             )));
             cells.push(Cell::from(Span::styled(
                 fmt_bytes(h.size_bytes.unwrap_or(0)),
-                Style::default().fg(Color::LightCyan),
+                Style::default().fg(Color::White),
             )));
         }
 
@@ -889,48 +898,48 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
 
         let detail_lines = if is_single_line {
             vec![Line::from(vec![
-                Span::styled("ID: ", Style::default().fg(Color::Yellow)),
-                Span::styled(qid_str, Style::default().fg(Color::LightBlue)),
-                Span::styled("  • File: ", Style::default().fg(Color::Yellow)),
+                Span::styled("ID: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(qid_str, Style::default().fg(Color::White)),
+                Span::styled("  • File: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     file_str,
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("  • Student: ", Style::default().fg(Color::Yellow)),
+                Span::styled("  • Student: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(student_str, Style::default().fg(Color::LightGreen)),
-                Span::styled("  • Status: ", Style::default().fg(Color::Yellow)),
+                Span::styled("  • Status: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     status_str,
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("  • IP: ", Style::default().fg(Color::Yellow)),
+                Span::styled("  • IP: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(client_ip_str, Style::default().fg(Color::White)),
-                Span::styled("  • Hostname: ", Style::default().fg(Color::Yellow)),
+                Span::styled("  • Hostname: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(hostname_str, Style::default().fg(Color::Gray)),
-                Span::styled("  • Size: ", Style::default().fg(Color::Yellow)),
-                Span::styled(size_str, Style::default().fg(Color::LightCyan)),
-                Span::styled("  • Time: ", Style::default().fg(Color::Yellow)),
+                Span::styled("  • Size: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(size_str, Style::default().fg(Color::White)),
+                Span::styled("  • Time: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(time_str, Style::default().fg(Color::White)),
             ])]
         } else {
             vec![
                 Line::from(vec![
-                    Span::styled("ID: ", Style::default().fg(Color::Yellow)),
-                    Span::styled(qid_str, Style::default().fg(Color::LightBlue)),
-                    Span::styled("  • File: ", Style::default().fg(Color::Yellow)),
+                    Span::styled("ID: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(qid_str, Style::default().fg(Color::White)),
+                    Span::styled("  • File: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(
                         file_str,
                         Style::default()
                             .fg(Color::White)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled("  • Student: ", Style::default().fg(Color::Yellow)),
+                    Span::styled("  • Student: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(student_str, Style::default().fg(Color::LightGreen)),
-                    Span::styled("  • Status: ", Style::default().fg(Color::Yellow)),
+                    Span::styled("  • Status: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(
                         status_str,
                         Style::default()
@@ -939,13 +948,13 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
                     ),
                 ]),
                 Line::from(vec![
-                    Span::styled("IP: ", Style::default().fg(Color::Yellow)),
+                    Span::styled("IP: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(client_ip_str, Style::default().fg(Color::White)),
-                    Span::styled("  • Hostname: ", Style::default().fg(Color::Yellow)),
+                    Span::styled("  • Hostname: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(hostname_str, Style::default().fg(Color::Gray)),
-                    Span::styled("  • Size: ", Style::default().fg(Color::Yellow)),
-                    Span::styled(size_str, Style::default().fg(Color::LightCyan)),
-                    Span::styled("  • Time: ", Style::default().fg(Color::Yellow)),
+                    Span::styled("  • Size: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(size_str, Style::default().fg(Color::White)),
+                    Span::styled("  • Time: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(time_str, Style::default().fg(Color::White)),
                 ]),
             ]
@@ -955,7 +964,7 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::Cyan))
+                .border_style(Style::default().fg(Color::DarkGray))
                 .title(" Selected Record "),
         );
         frame.render_widget(detail, chunks[2]);
