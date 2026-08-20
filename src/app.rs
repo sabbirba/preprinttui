@@ -435,10 +435,8 @@ fn make_headers(worker_key: &Option<String>, password: &Option<String>) -> Heade
         && !pwd.trim().is_empty()
     {
         if !map.contains_key("Authorization")
-            && let Ok(v) = HeaderValue::from_str(&format!(
-                "Basic {}",
-                STANDARD.encode(format!(":{pwd}"))
-            ))
+            && let Ok(v) =
+                HeaderValue::from_str(&format!("Basic {}", STANDARD.encode(format!(":{pwd}"))))
         {
             map.insert("Authorization", v);
         }

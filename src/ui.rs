@@ -341,10 +341,7 @@ fn render_auth_modal(app: &App, frame: &mut Frame, area: Rect) {
 
     let inner_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Length(3), Constraint::Length(1)])
         .margin(1)
         .split(modal_area);
 

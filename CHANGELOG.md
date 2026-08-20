@@ -2,6 +2,11 @@
 
 Active since `0.1.0`.
 
+### 0.1.6
+
+- Simplified authentication modal to password-only input with blank username basic auth encoding.
+- Enforced clean rustfmt formatting across codebase.
+
 ### 0.1.5
 
 - Cleaned right header telemetry by removing redundant worker count display.
