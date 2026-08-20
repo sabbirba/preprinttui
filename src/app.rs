@@ -137,17 +137,13 @@ impl App {
 
     pub fn open_auth_modal(&mut self) {
         self.auth_mode = true;
-        self.auth_field = AuthField::WorkerKey;
-        self.input_worker_key = self.worker_key.clone().unwrap_or_default();
+        self.auth_field = AuthField::Password;
         self.input_password = self.password.clone().unwrap_or_default();
     }
 
     pub fn commit_auth(&mut self) {
-        self.worker_key = if self.input_worker_key.trim().is_empty() {
-            None
-        } else {
-            Some(self.input_worker_key.trim().to_string())
-        };
+        self.worker_key = None;
+        self.input_worker_key.clear();
         self.password = if self.input_password.trim().is_empty() {
             None
         } else {
@@ -441,7 +437,7 @@ fn make_headers(worker_key: &Option<String>, password: &Option<String>) -> Heade
         if !map.contains_key("Authorization")
             && let Ok(v) = HeaderValue::from_str(&format!(
                 "Basic {}",
-                STANDARD.encode(format!("{pwd}:{pwd}"))
+                STANDARD.encode(format!(":{pwd}"))
             ))
         {
             map.insert("Authorization", v);

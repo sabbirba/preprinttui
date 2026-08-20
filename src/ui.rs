@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
 };
 
-use crate::app::{App, AuthField, Tab};
+use crate::app::{App, Tab};
 
 pub fn fmt_bytes(b: u64) -> String {
     if b < 1024 {
@@ -323,8 +323,8 @@ fn render_footer(app: &App, frame: &mut Frame, area: Rect, width: u16) {
 }
 
 fn render_auth_modal(app: &App, frame: &mut Frame, area: Rect) {
-    let modal_width = 54.min(area.width.saturating_sub(2));
-    let modal_height = 10.min(area.height.saturating_sub(2));
+    let modal_width = 44.min(area.width.saturating_sub(2));
+    let modal_height = 7.min(area.height.saturating_sub(2));
 
     let x = (area.width.saturating_sub(modal_width)) / 2;
     let y = (area.height.saturating_sub(modal_height)) / 2;
@@ -336,13 +336,12 @@ fn render_auth_modal(app: &App, frame: &mut Frame, area: Rect) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::White))
-        .title(" Credentials ");
+        .title(" Password ");
     frame.render_widget(modal_block, modal_area);
 
     let inner_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Length(1),
         ])
@@ -361,100 +360,40 @@ fn render_auth_modal(app: &App, frame: &mut Frame, area: Rect) {
         }
     };
 
-    let f1_active = app.auth_field == AuthField::WorkerKey;
-    let f1_val = mask(&app.input_worker_key);
-    let f1 = Paragraph::new(Line::from(vec![
+    let f_val = mask(&app.input_password);
+    let f = Paragraph::new(Line::from(vec![
+        Span::styled("› ", Style::default().fg(Color::White)),
         Span::styled(
-            if f1_active { "› " } else { "  " },
-            Style::default().fg(if f1_active {
-                Color::White
-            } else {
-                Color::DarkGray
-            }),
-        ),
-        Span::styled(
-            if f1_val.is_empty() {
-                "enter worker key..."
-            } else {
-                &f1_val
-            },
-            Style::default().fg(if f1_val.is_empty() {
-                Color::DarkGray
-            } else {
-                Color::White
-            }),
-        ),
-        if f1_active {
-            Span::styled("█", Style::default().fg(Color::White))
-        } else {
-            Span::raw("")
-        },
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(if f1_active {
-                Style::default().fg(Color::White)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            })
-            .title(" Key "),
-    );
-    frame.render_widget(f1, inner_chunks[0]);
-
-    let f2_active = app.auth_field == AuthField::Password;
-    let f2_val = mask(&app.input_password);
-    let f2 = Paragraph::new(Line::from(vec![
-        Span::styled(
-            if f2_active { "› " } else { "  " },
-            Style::default().fg(if f2_active {
-                Color::White
-            } else {
-                Color::DarkGray
-            }),
-        ),
-        Span::styled(
-            if f2_val.is_empty() {
+            if f_val.is_empty() {
                 "enter password..."
             } else {
-                &f2_val
+                &f_val
             },
-            Style::default().fg(if f2_val.is_empty() {
+            Style::default().fg(if f_val.is_empty() {
                 Color::DarkGray
             } else {
                 Color::White
             }),
         ),
-        if f2_active {
-            Span::styled("█", Style::default().fg(Color::White))
-        } else {
-            Span::raw("")
-        },
+        Span::styled("█", Style::default().fg(Color::White)),
     ]))
     .block(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(if f2_active {
-                Style::default().fg(Color::White)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            })
+            .border_style(Style::default().fg(Color::White))
             .title(" Password "),
     );
-    frame.render_widget(f2, inner_chunks[1]);
+    frame.render_widget(f, inner_chunks[0]);
 
     let hint = Paragraph::new(Line::from(vec![
-        Span::styled("tab", Style::default().fg(Color::White)),
-        Span::styled(" next  •  ", Style::default().fg(Color::DarkGray)),
         Span::styled("enter", Style::default().fg(Color::White)),
         Span::styled(" save  •  ", Style::default().fg(Color::DarkGray)),
         Span::styled("esc", Style::default().fg(Color::White)),
         Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
     ]))
     .alignment(Alignment::Center);
-    frame.render_widget(hint, inner_chunks[2]);
+    frame.render_widget(hint, inner_chunks[1]);
 }
 
 fn render_workers(app: &App, frame: &mut Frame, area: Rect) {

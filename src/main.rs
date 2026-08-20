@@ -15,7 +15,7 @@ use std::{io, time::Duration};
 use tokio::sync::mpsc;
 
 use crate::{
-    app::{App, AuthField, RefreshData, Tab, fetch_update},
+    app::{App, RefreshData, Tab, fetch_update},
     consts::{REFRESH_INTERVAL_SECS, TICK_RATE_MS},
     ui::render_ui,
 };
@@ -118,24 +118,10 @@ async fn main() -> Result<()> {
                             auto_refresh: app.auto_refresh,
                         });
                     }
-                    KeyCode::Tab | KeyCode::Down | KeyCode::BackTab | KeyCode::Up => {
-                        app.auth_field = match app.auth_field {
-                            AuthField::WorkerKey => AuthField::Password,
-                            AuthField::Password => AuthField::WorkerKey,
-                        };
+                    KeyCode::Backspace => {
+                        app.input_password.pop();
                     }
-                    KeyCode::Backspace => match app.auth_field {
-                        AuthField::WorkerKey => {
-                            app.input_worker_key.pop();
-                        }
-                        AuthField::Password => {
-                            app.input_password.pop();
-                        }
-                    },
-                    KeyCode::Char(c) => match app.auth_field {
-                        AuthField::WorkerKey => app.input_worker_key.push(c),
-                        AuthField::Password => app.input_password.push(c),
-                    },
+                    KeyCode::Char(c) => app.input_password.push(c),
                     _ => {}
                 }
             } else if app.search_mode {
