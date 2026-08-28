@@ -86,6 +86,8 @@ pub fn render_ui(app: &App, frame: &mut Frame) {
 
     if app.auth_mode {
         render_auth_modal(app, frame, area);
+    } else if app.inspector_mode {
+        render_inspector_modal(app, frame, area);
     }
 }
 
@@ -185,10 +187,10 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect, is_compact: bool) {
     }
 
     let right_spans = if app.is_unauthorized {
-        vec![
-            Span::styled("● ", Style::default().fg(Color::DarkGray)),
-            Span::styled("unauthorized", Style::default().fg(Color::White)),
-        ]
+        vec![Span::styled(
+            "unauthorized",
+            Style::default().fg(Color::DarkGray),
+        )]
     } else if !has_stats {
         vec![
             Span::styled(
@@ -198,26 +200,26 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect, is_compact: bool) {
             Span::styled("connecting", Style::default().fg(Color::DarkGray)),
         ]
     } else {
-        let mut r = vec![
-            Span::styled(
-                if is_online { "● " } else { "○ " },
-                Style::default().fg(if is_online {
-                    Color::Green
-                } else {
-                    Color::DarkGray
-                }),
-            ),
-            Span::styled(
-                if is_online { "online" } else { "offline" },
-                Style::default().fg(if is_online {
-                    Color::White
-                } else {
-                    Color::DarkGray
-                }),
-            ),
-        ];
+        let mut r = vec![Span::styled(
+            if is_online { "online" } else { "offline" },
+            Style::default().fg(if is_online {
+                Color::Green
+            } else {
+                Color::DarkGray
+            }),
+        )];
 
-        if area.width >= 70 {
+        if let Some(lat) = app.latency_ms
+            && area.width >= 75
+        {
+            r.push(Span::styled("  •  ", Style::default().fg(Color::DarkGray)));
+            r.push(Span::styled(
+                format!("{lat}ms"),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+
+        if area.width >= 90 {
             r.push(Span::styled("  •  ", Style::default().fg(Color::DarkGray)));
             r.push(Span::styled(
                 uptime_str,
@@ -323,7 +325,7 @@ fn render_footer(app: &App, frame: &mut Frame, area: Rect, width: u16) {
 }
 
 fn render_auth_modal(app: &App, frame: &mut Frame, area: Rect) {
-    let modal_width = 44.min(area.width.saturating_sub(2));
+    let modal_width = 46.min(area.width.saturating_sub(2));
     let modal_height = 7.min(area.height.saturating_sub(2));
 
     let x = (area.width.saturating_sub(modal_width)) / 2;
@@ -383,9 +385,16 @@ fn render_auth_modal(app: &App, frame: &mut Frame, area: Rect) {
     );
     frame.render_widget(f, inner_chunks[0]);
 
+    let toggle_label = if app.mask_credentials { "show" } else { "hide" };
+
     let hint = Paragraph::new(Line::from(vec![
         Span::styled("enter", Style::default().fg(Color::White)),
         Span::styled(" save  •  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("tab", Style::default().fg(Color::White)),
+        Span::styled(
+            format!(" {toggle_label}  •  "),
+            Style::default().fg(Color::DarkGray),
+        ),
         Span::styled("esc", Style::default().fg(Color::White)),
         Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
     ]))
@@ -445,28 +454,32 @@ fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
             .split(area)
     };
 
-    let (headers, widths): (Vec<&str>, Vec<Constraint>) = if area.width >= 80 {
+    let (headers, widths): (Vec<&str>, Vec<Constraint>) = if area.width >= 90 {
         (
-            vec!["", "IDENT", "IP", "AGENT", "JOBS", "UPTIME", "STATUS"],
+            vec![
+                "", "IDENT", "IP", "AGENT", "JOBS", "CONNS", "UPTIME", "STATUS",
+            ],
             vec![
                 Constraint::Length(2),
-                Constraint::Percentage(25),
-                Constraint::Percentage(20),
-                Constraint::Percentage(25),
+                Constraint::Percentage(22),
+                Constraint::Percentage(18),
+                Constraint::Percentage(22),
                 Constraint::Percentage(10),
+                Constraint::Percentage(8),
                 Constraint::Percentage(10),
                 Constraint::Percentage(10),
             ],
         )
-    } else if area.width >= 50 {
+    } else if area.width >= 55 {
         (
-            vec!["", "IDENT", "IP", "JOBS", "STATUS"],
+            vec!["", "IDENT", "IP", "JOBS", "CONNS", "STATUS"],
             vec![
                 Constraint::Length(2),
-                Constraint::Percentage(35),
-                Constraint::Percentage(30),
-                Constraint::Percentage(15),
-                Constraint::Percentage(20),
+                Constraint::Percentage(32),
+                Constraint::Percentage(28),
+                Constraint::Percentage(12),
+                Constraint::Percentage(10),
+                Constraint::Percentage(18),
             ],
         )
     } else {
@@ -494,10 +507,16 @@ fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
 
     let rows = filtered.iter().enumerate().map(|(idx, w)| {
         let sel = idx == app.selected_worker;
+        let is_flashing = app
+            .flash_highlight
+            .map(|t| t.elapsed().as_millis() < 600)
+            .unwrap_or(false);
         let st = if sel {
             Style::default()
                 .bg(Color::Rgb(35, 35, 40))
                 .add_modifier(Modifier::BOLD)
+        } else if is_flashing && idx == 0 {
+            Style::default().bg(Color::Rgb(25, 45, 30))
         } else {
             Style::default()
         };
@@ -514,14 +533,14 @@ fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
             )),
         ];
 
-        if area.width >= 50 {
+        if area.width >= 55 {
             cells.push(Cell::from(Span::styled(
                 w.ip.as_deref().unwrap_or("-"),
                 Style::default().fg(Color::White),
             )));
         }
 
-        if area.width >= 80 {
+        if area.width >= 90 {
             cells.push(Cell::from(Span::styled(
                 w.user_agent.as_deref().unwrap_or("-"),
                 Style::default().fg(Color::DarkGray),
@@ -533,11 +552,21 @@ fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
             Style::default().fg(Color::LightGreen),
         )));
 
-        if area.width >= 80 {
+        if area.width >= 55 {
             cells.push(Cell::from(Span::styled(
-                w.age_seconds
-                    .map(fmt_dur)
-                    .unwrap_or_else(|| "-".to_string()),
+                w.connections.unwrap_or(1).to_string(),
+                Style::default().fg(Color::White),
+            )));
+        }
+
+        if area.width >= 90 {
+            let now_ms = chrono::Local::now().timestamp_millis().max(0) as u64;
+            let uptime_str = w
+                .connected_at
+                .map(|t| fmt_dur(now_ms.saturating_sub(t) / 1000))
+                .unwrap_or_else(|| "-".to_string());
+            cells.push(Cell::from(Span::styled(
+                uptime_str,
                 Style::default().fg(Color::DarkGray),
             )));
         }
@@ -569,6 +598,7 @@ fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
         let ip_str = w.ip.as_deref().unwrap_or("?");
         let agent_str = w.user_agent.as_deref().unwrap_or("?");
         let jobs_str = format!("{}", w.jobs_completed.unwrap_or(0));
+        let conns_str = format!("{}", w.connections.unwrap_or(1));
 
         let mut detail_spans = vec![
             Span::styled("Ident: ", Style::default().fg(Color::DarkGray)),
@@ -579,12 +609,14 @@ fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled("  •  Status: ", Style::default().fg(Color::DarkGray)),
-            Span::styled("● online", Style::default().fg(Color::Green)),
+            Span::styled("online", Style::default().fg(Color::Green)),
             Span::styled("  •  Jobs: ", Style::default().fg(Color::DarkGray)),
             Span::styled(jobs_str, Style::default().fg(Color::LightGreen)),
+            Span::styled("  •  Conns: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(conns_str, Style::default().fg(Color::White)),
         ];
 
-        if area.width >= 65 {
+        if area.width >= 75 {
             detail_spans.push(Span::styled(
                 "  •  IP: ",
                 Style::default().fg(Color::DarkGray),
@@ -592,7 +624,7 @@ fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
             detail_spans.push(Span::styled(ip_str, Style::default().fg(Color::White)));
         }
 
-        if area.width >= 90 {
+        if area.width >= 100 {
             detail_spans.push(Span::styled(
                 "  •  Agent: ",
                 Style::default().fg(Color::DarkGray),
@@ -713,23 +745,20 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
 
     let rows = filtered.iter().enumerate().map(|(idx, h)| {
         let sel = idx == app.selected_history;
+        let is_flashing = app
+            .flash_highlight
+            .map(|t| t.elapsed().as_millis() < 600)
+            .unwrap_or(false);
         let st = if sel {
             Style::default()
                 .bg(Color::Rgb(35, 35, 40))
                 .add_modifier(Modifier::BOLD)
+        } else if is_flashing && idx == 0 {
+            Style::default().bg(Color::Rgb(25, 45, 30))
         } else {
             Style::default()
         };
-        let qid = h
-            .queue_id
-            .as_ref()
-            .or(h.id.as_ref())
-            .map(|v| match v {
-                serde_json::Value::Number(n) => n.to_string(),
-                serde_json::Value::String(s) => s.clone(),
-                _ => "-".to_string(),
-            })
-            .unwrap_or_else(|| "-".to_string());
+        let qid = h.display_id();
         let status = h.status.as_deref().unwrap_or("-");
         let status_col = if status == "released" || status == "printed" {
             Color::Green
@@ -794,16 +823,7 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
     );
 
     if show_details && let Some(h) = sel_history {
-        let qid_str = h
-            .queue_id
-            .as_ref()
-            .or(h.id.as_ref())
-            .map(|v| match v {
-                serde_json::Value::Number(n) => n.to_string(),
-                serde_json::Value::String(s) => s.clone(),
-                _ => "-".to_string(),
-            })
-            .unwrap_or_else(|| "-".to_string());
+        let qid_str = h.display_id();
         let student_str = h.student.as_deref().unwrap_or("-");
         let status_str = h.status.as_deref().unwrap_or("-");
         let client_ip_str = h.client_ip.as_deref().unwrap_or("-");
@@ -818,7 +838,7 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
             Span::styled(student_str, Style::default().fg(Color::LightGreen)),
             Span::styled("  •  Status: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("● {status_str}"),
+                status_str,
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
@@ -923,4 +943,88 @@ fn render_search(app: &App, frame: &mut Frame, area: Rect) {
     } else {
         render_history(app, frame, area);
     }
+}
+
+fn render_inspector_modal(app: &App, frame: &mut Frame, area: Rect) {
+    let modal_width = 72.min(area.width.saturating_sub(4));
+    let modal_height = 22.min(area.height.saturating_sub(4));
+
+    let x = (area.width.saturating_sub(modal_width)) / 2;
+    let y = (area.height.saturating_sub(modal_height)) / 2;
+    let modal_area = Rect::new(x, y, modal_width, modal_height);
+
+    frame.render_widget(Clear, modal_area);
+
+    let (title, json_str) = match app.tab {
+        Tab::Workers => {
+            let f = app.filtered_workers();
+            if let Some(w) = f.get(app.selected_worker) {
+                let id = w.id.as_deref().unwrap_or("worker");
+                (
+                    format!(" Worker: {id} "),
+                    serde_json::to_string_pretty(w).unwrap_or_default(),
+                )
+            } else {
+                (" Worker ".to_string(), "{}".to_string())
+            }
+        }
+        Tab::History | Tab::Search => {
+            let f = app.filtered_history();
+            if let Some(h) = f.get(app.selected_history) {
+                let qid = h.display_id();
+                (
+                    format!(" Job: #{qid} "),
+                    serde_json::to_string_pretty(h).unwrap_or_default(),
+                )
+            } else {
+                (" History ".to_string(), "{}".to_string())
+            }
+        }
+    };
+
+    let lines: Vec<&str> = json_str.lines().collect();
+    let total_lines = lines.len();
+    let body_height = modal_height.saturating_sub(4) as usize;
+    let max_scroll = total_lines.saturating_sub(body_height);
+    let scroll = app.inspector_scroll.min(max_scroll);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::White))
+        .title(title);
+
+    let inner = block.inner(modal_area);
+    frame.render_widget(block, modal_area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    let mut text_lines = Vec::new();
+    for line in lines.iter().skip(scroll).take(body_height) {
+        text_lines.push(Line::from(Span::styled(
+            *line,
+            Style::default().fg(Color::White),
+        )));
+    }
+    let p = Paragraph::new(text_lines);
+    frame.render_widget(p, chunks[0]);
+
+    let scroll_info = if total_lines > body_height {
+        format!("  •  line {}/{}", scroll + 1, total_lines)
+    } else {
+        String::new()
+    };
+
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled("esc", Style::default().fg(Color::White)),
+        Span::styled(" close  •  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("↑/↓", Style::default().fg(Color::White)),
+        Span::styled(" scroll", Style::default().fg(Color::DarkGray)),
+        Span::styled(scroll_info, Style::default().fg(Color::DarkGray)),
+    ]))
+    .alignment(Alignment::Center);
+    frame.render_widget(hint, chunks[1]);
 }

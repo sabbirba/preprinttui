@@ -1,6 +1,6 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Clone, Deserialize, Serialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub struct PrintStats {
@@ -16,7 +16,7 @@ pub struct PrintStats {
     pub last_job_at: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub struct WorkerInfo {
@@ -24,14 +24,13 @@ pub struct WorkerInfo {
     pub ip: Option<String>,
     pub user_agent: Option<String>,
     pub jobs_completed: Option<usize>,
-    pub age_seconds: Option<u64>,
-    pub last_seen_seconds: Option<u64>,
     pub connected_at: Option<u64>,
     pub last_seen_at: Option<u64>,
+    pub connections: Option<usize>,
     pub status: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub struct HistoryEntry {
@@ -44,7 +43,20 @@ pub struct HistoryEntry {
     pub ip: Option<String>,
     pub queue: Option<String>,
     pub status: Option<String>,
-    pub age_seconds: Option<u64>,
     pub timestamp: Option<u64>,
     pub size_bytes: Option<u64>,
+}
+
+impl HistoryEntry {
+    pub fn display_id(&self) -> String {
+        self.queue_id
+            .as_ref()
+            .or(self.id.as_ref())
+            .map(|v| match v {
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::String(s) => s.clone(),
+                _ => "-".to_string(),
+            })
+            .unwrap_or_else(|| "-".to_string())
+    }
 }

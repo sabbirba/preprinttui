@@ -2,6 +2,18 @@
 
 Active since `0.1.0`.
 
+### 0.1.7
+
+- Implemented HTTP ETag conditional matching (`304 Not Modified`) with 0 payload bytes transferred on cached cycles.
+- Added live active worker `CONNS` column and detail card metric.
+- Added Tab password mask toggle (`show`/`hide`) with instant preview in authentication modal.
+- Added Bubblezone-style interactive mouse hit-testing for tab switching, row selection, modal dismiss, action buttons, and wheel scrolling.
+- Added full raw JSON inspector modal accessible via Enter, Space, or `v` with vertical scrolling.
+- Added real-time ping / round-trip latency telemetry indicator.
+- Added incoming print job pulse shimmer animation on new updates.
+- Optimized intelligent polling to ping lightweight stats endpoints and fetch history only on job state mutations.
+- Removed status dot indicators for clean typography.
+
 ### 0.1.6
 
 - Simplified authentication modal to password-only input with blank username basic auth encoding.
