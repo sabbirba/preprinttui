@@ -324,7 +324,7 @@ async fn main() -> Result<()> {
                                 app.auth_mode = false;
                             } else if row == y + modal_height.saturating_sub(2) {
                                 let local_x = col.saturating_sub(x);
-                                if local_x >= 6 && local_x <= 16 {
+                                if (6..=16).contains(&local_x) {
                                     app.commit_auth();
                                     let _ = tx_req.send(FetchReq {
                                         tab: app.tab,
@@ -332,9 +332,9 @@ async fn main() -> Result<()> {
                                         password: app.password.clone(),
                                         auto_refresh: app.auto_refresh,
                                     });
-                                } else if local_x >= 17 && local_x <= 28 {
+                                } else if (17..=28).contains(&local_x) {
                                     app.mask_credentials = !app.mask_credentials;
-                                } else if local_x >= 29 && local_x <= 42 {
+                                } else if (29..=42).contains(&local_x) {
                                     app.auth_mode = false;
                                 }
                             }
@@ -393,11 +393,11 @@ async fn main() -> Result<()> {
                                     password: app.password.clone(),
                                     auto_refresh: app.auto_refresh,
                                 });
-                            } else if col >= 20 && col <= 30 {
+                            } else if (20..=30).contains(&col) {
                                 app.search_mode = true;
-                            } else if col >= 32 && col <= 42 {
+                            } else if (32..=42).contains(&col) {
                                 app.open_auth_modal();
-                            } else if col >= 44 && col <= 54 {
+                            } else if (44..=54).contains(&col) {
                                 app.clear_credentials();
                                 let _ = tx_req.send(FetchReq {
                                     tab: app.tab,
@@ -405,7 +405,7 @@ async fn main() -> Result<()> {
                                     password: None,
                                     auto_refresh: app.auto_refresh,
                                 });
-                            } else if col >= 56 && col <= 68 {
+                            } else if (56..=68).contains(&col) {
                                 app.is_loading = true;
                                 app.set_toast("Refreshed");
                                 let _ = tx_req.send(FetchReq {
@@ -414,7 +414,7 @@ async fn main() -> Result<()> {
                                     password: app.password.clone(),
                                     auto_refresh: app.auto_refresh,
                                 });
-                            } else if col >= 70 && col <= 80 {
+                            } else if (70..=80).contains(&col) {
                                 app.should_quit = true;
                             }
                         } else {

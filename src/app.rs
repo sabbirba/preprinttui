@@ -204,21 +204,21 @@ impl App {
             self.stats = Some(stats);
         }
 
-        if let Some(w) = data.workers {
-            if self.workers != w {
-                self.workers = w;
-                if self.selected_worker >= self.filtered_workers().len() {
-                    self.selected_worker = self.filtered_workers().len().saturating_sub(1);
-                }
+        if let Some(w) = data.workers
+            && self.workers != w
+        {
+            self.workers = w;
+            if self.selected_worker >= self.filtered_workers().len() {
+                self.selected_worker = self.filtered_workers().len().saturating_sub(1);
             }
         }
 
-        if let Some(h) = data.history {
-            if self.history != h {
-                self.history = h;
-                if self.selected_history >= self.filtered_history().len() {
-                    self.selected_history = self.filtered_history().len().saturating_sub(1);
-                }
+        if let Some(h) = data.history
+            && self.history != h
+        {
+            self.history = h;
+            if self.selected_history >= self.filtered_history().len() {
+                self.selected_history = self.filtered_history().len().saturating_sub(1);
             }
         }
 
