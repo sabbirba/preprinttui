@@ -2,6 +2,12 @@
 
 Active since `0.1.0`.
 
+### 0.1.8
+
+- Implemented real-time Server-Sent Events (SSE) stream (`/print/events`) eliminating periodic polling overhead.
+- Instant 0ms event push on incoming print jobs, claims, and worker lifecycle updates.
+- Added automatic stream reconnection with exponential backoff and seamless fallback synchronization.
+
 ### 0.1.7
 
 - Implemented HTTP ETag conditional matching (`304 Not Modified`) with 0 payload bytes transferred on cached cycles.

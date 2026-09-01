@@ -18,7 +18,7 @@ use std::{io, time::Duration};
 use tokio::sync::mpsc;
 
 use crate::{
-    app::{App, HttpCache, RefreshData, Tab, fetch_update},
+    app::{App, HttpCache, RefreshData, Tab, fetch_update, read_events},
     consts::{REFRESH_INTERVAL_SECS, TICK_RATE_MS},
     ui::render_ui,
 };
@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
     let (tx_req, mut rx_req) = mpsc::unbounded_channel::<FetchReq>();
 
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(4))
+        .connect_timeout(Duration::from_secs(5))
         .tcp_nodelay(true)
         .tcp_keepalive(Some(Duration::from_secs(60)))
         .pool_idle_timeout(Some(Duration::from_secs(90)))
@@ -80,6 +80,11 @@ async fn main() -> Result<()> {
                     last_req = req;
                     let data = fetch_update(&client, last_req.tab, &last_req.worker_key, &last_req.password, &mut http_cache).await;
                     let _ = tx_data.send(data);
+                }
+                res = read_events(&client, &last_req.worker_key, &last_req.password, &tx_data, &mut http_cache) => {
+                    if res.is_err() {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
                 }
                 _ = interval.tick() => {
                     if last_req.auto_refresh {

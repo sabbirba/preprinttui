@@ -60,3 +60,10 @@ impl HistoryEntry {
             .unwrap_or_else(|| "-".to_string())
     }
 }
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SseInit {
+    pub stats: Option<PrintStats>,
+    pub workers: Option<Vec<WorkerInfo>>,
+}

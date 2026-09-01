@@ -14,7 +14,7 @@ use std::os::unix::fs::PermissionsExt;
 use crate::{
     consts::DEFAULT_URL,
     crypto::make_jwt,
-    types::{HistoryEntry, PrintStats, WorkerInfo},
+    types::{HistoryEntry, PrintStats, SseInit, WorkerInfo},
 };
 
 const KEYRING_SERVICE: &str = "preprinttui";
@@ -729,4 +729,146 @@ pub async fn fetch_update(
         latency_ms,
         has_new_data,
     }
+}
+
+pub async fn read_events(
+    client: &reqwest::Client,
+    worker_key: &Option<String>,
+    password: &Option<String>,
+    tx_data: &tokio::sync::mpsc::UnboundedSender<RefreshData>,
+    cache: &mut HttpCache,
+) -> Result<(), anyhow::Error> {
+    let hdrs = make_headers(worker_key, password);
+    let url = DEFAULT_URL.trim_end_matches('/');
+    let sse_url = format!("{url}/print/events");
+
+    let mut res = client.get(&sse_url).headers(hdrs.clone()).send().await?;
+
+    if res.status() == StatusCode::UNAUTHORIZED {
+        let _ = tx_data.send(RefreshData {
+            stats: None,
+            workers: None,
+            history: None,
+            is_unauthorized: true,
+            timestamp: Local::now(),
+            latency_ms: None,
+            has_new_data: false,
+        });
+        return Ok(());
+    }
+
+    let mut buf = String::new();
+
+    while let Some(chunk) = res.chunk().await? {
+        let chunk_str = String::from_utf8_lossy(&chunk);
+        buf.push_str(&chunk_str);
+
+        while let Some(pos) = buf.find("\n\n") {
+            let msg = buf[..pos].to_string();
+            buf.drain(..pos + 2);
+
+            let mut event_name = "message";
+            let mut event_data = String::new();
+
+            for line in msg.lines() {
+                if let Some(rest) = line.strip_prefix("event:") {
+                    event_name = rest.trim();
+                } else if let Some(rest) = line.strip_prefix("data:") {
+                    event_data.push_str(rest.trim());
+                }
+            }
+
+            if event_data.is_empty() {
+                continue;
+            }
+
+            match event_name {
+                "init" => {
+                    if let Ok(init) = serde_json::from_str::<SseInit>(&event_data) {
+                        cache.stats = init.stats.clone();
+                        cache.workers = init.workers.clone();
+                        let _ = tx_data.send(RefreshData {
+                            stats: init.stats,
+                            workers: init.workers,
+                            history: None,
+                            is_unauthorized: false,
+                            timestamp: Local::now(),
+                            latency_ms: Some(0),
+                            has_new_data: true,
+                        });
+                    }
+                }
+                "stats" => {
+                    if let Ok(stats) = serde_json::from_str::<PrintStats>(&event_data) {
+                        let prev_jobs = cache.stats.as_ref().and_then(|s| s.last_job_at);
+                        let need_hist = stats.last_job_at != prev_jobs;
+                        cache.stats = Some(stats.clone());
+
+                        let hist_data = if need_hist {
+                            let (_, h, _) = fetch_history(
+                                client,
+                                url,
+                                &hdrs,
+                                cache.etag_history.as_deref(),
+                                cache.history.as_deref(),
+                            )
+                            .await;
+                            cache.history = h.clone();
+                            h
+                        } else {
+                            None
+                        };
+
+                        let _ = tx_data.send(RefreshData {
+                            stats: Some(stats),
+                            workers: None,
+                            history: hist_data,
+                            is_unauthorized: false,
+                            timestamp: Local::now(),
+                            latency_ms: Some(0),
+                            has_new_data: need_hist,
+                        });
+                    }
+                }
+                "workers" => {
+                    if let Ok(workers) = serde_json::from_str::<Vec<WorkerInfo>>(&event_data) {
+                        cache.workers = Some(workers.clone());
+                        let _ = tx_data.send(RefreshData {
+                            stats: None,
+                            workers: Some(workers),
+                            history: None,
+                            is_unauthorized: false,
+                            timestamp: Local::now(),
+                            latency_ms: Some(0),
+                            has_new_data: true,
+                        });
+                    }
+                }
+                "job_queued" | "job_claimed" => {
+                    let (_, h, _) = fetch_history(
+                        client,
+                        url,
+                        &hdrs,
+                        cache.etag_history.as_deref(),
+                        cache.history.as_deref(),
+                    )
+                    .await;
+                    cache.history = h.clone();
+
+                    let _ = tx_data.send(RefreshData {
+                        stats: cache.stats.clone(),
+                        workers: None,
+                        history: h,
+                        is_unauthorized: false,
+                        timestamp: Local::now(),
+                        latency_ms: Some(0),
+                        has_new_data: true,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(())
 }
