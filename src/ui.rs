@@ -58,6 +58,15 @@ fn fmt_dur(s: u64) -> String {
     }
 }
 
+fn fmt_age(s: u64) -> String {
+    match s {
+        0..60 => format!("{s}s ago"),
+        60..3600 => format!("{}m ago", s / 60),
+        3600..86400 => format!("{}h ago", s / 3600),
+        _ => format!("{}d ago", s / 86400),
+    }
+}
+
 fn to_millis(ts: u64) -> u64 {
     if ts < 10_000_000_000 {
         ts.saturating_mul(1000)
@@ -468,10 +477,7 @@ fn worker_uptime(worker: &WorkerInfo) -> String {
 fn worker_last_check(worker: &WorkerInfo) -> String {
     worker.last_update_checked.filter(|&t| t != 0).map_or_else(
         || "never".to_string(),
-        |t| {
-            let age = now_millis().saturating_sub(to_millis(t)) / 1000;
-            format!("{} ago", fmt_dur(age))
-        },
+        |t| fmt_age(now_millis().saturating_sub(to_millis(t)) / 1000),
     )
 }
 
@@ -763,7 +769,10 @@ fn render_inspector_modal(app: &App, frame: &mut Frame, area: Rect) {
         .collect();
     frame.render_widget(Paragraph::new(text), body);
 
-    let mut hint = key_hints(&[("esc", "close"), ("↑/↓", "scroll")], SEPARATOR);
+    let mut hint = key_hints(
+        &[("esc", "close"), ("←/→", "prev/next"), ("↑/↓", "scroll")],
+        SEPARATOR,
+    );
     if lines.len() > body_height {
         hint.push(Span::styled(
             format!("{SEPARATOR}line {}/{}", scroll + 1, lines.len()),
@@ -774,4 +783,71 @@ fn render_inspector_modal(app: &App, frame: &mut Frame, area: Rect) {
         Paragraph::new(Line::from(hint)).alignment(Alignment::Center),
         hint_area,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn rows_at(width: u16) -> (String, String) {
+        let worker = serde_json::from_value(serde_json::json!({
+            "id": "alpha", "ip": "10.0.0.1", "userAgent": "agent/1", "lastUpdateChecked": 1
+        }))
+        .expect("json");
+        let app = App {
+            workers: vec![worker],
+            ..App::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(width, 20)).expect("terminal");
+        terminal.draw(|f| render_ui(&app, f)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        let line = |y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        };
+        let lines: Vec<String> = (0..20).map(line).collect();
+        let find = |needle| {
+            lines
+                .iter()
+                .find(|l| l.contains(needle))
+                .cloned()
+                .unwrap_or_default()
+        };
+        (find("IDENT"), find("alpha"))
+    }
+
+    #[test]
+    fn worker_columns_align_at_every_width() {
+        for (width, columns) in [
+            (
+                120,
+                &[
+                    ("IDENT", "alpha"),
+                    ("IP", "10.0.0.1"),
+                    ("AGENT", "agent/1"),
+                    ("STATUS", "online"),
+                ][..],
+            ),
+            (
+                70,
+                &[("IDENT", "alpha"), ("IP", "10.0.0.1"), ("STATUS", "online")][..],
+            ),
+            (40, &[("IDENT", "alpha"), ("STATUS", "online")][..]),
+        ] {
+            let (header, row) = rows_at(width);
+            let column =
+                |line: &str, needle: &str| line.find(needle).map(|at| line[..at].chars().count());
+            for &(title, value) in columns {
+                assert_eq!(
+                    column(&header, title),
+                    column(&row, value),
+                    "{title} misaligned at {width}: {row}"
+                );
+            }
+            assert_eq!(header.contains("CHECKED"), width >= 90);
+            assert_eq!(row.contains("d ago"), width >= 90);
+        }
+    }
 }

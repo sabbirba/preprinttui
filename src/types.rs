@@ -1,18 +1,22 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+fn lenient_timestamp<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
+    Ok(
+        match Option::<serde_json::Value>::deserialize(deserializer)? {
+            Some(serde_json::Value::Number(n)) => n.as_u64(),
+            Some(serde_json::Value::String(s)) => s.trim().parse().ok(),
+            _ => None,
+        },
+    )
+}
 
 #[derive(Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
 pub struct PrintStats {
     pub status: Option<String>,
     pub uptime_seconds: Option<u64>,
     pub active_printers: Option<usize>,
-    pub worker_seen: Option<u64>,
-    pub queued_count: Option<usize>,
-    pub queue_bytes: Option<u64>,
-    pub claimed_count: Option<usize>,
     pub history_count: Option<usize>,
-    pub jobs_released: Option<usize>,
     pub last_job_at: Option<u64>,
 }
 
@@ -26,6 +30,7 @@ pub struct WorkerInfo {
     pub jobs_completed: Option<usize>,
     pub connected_at: Option<u64>,
     pub last_seen_at: Option<u64>,
+    #[serde(default, deserialize_with = "lenient_timestamp")]
     pub last_update_checked: Option<u64>,
     pub connections: Option<usize>,
     pub status: Option<String>,
@@ -63,4 +68,24 @@ impl HistoryEntry {
 pub struct SseInit {
     pub stats: Option<PrintStats>,
     pub workers: Option<Vec<WorkerInfo>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WorkerInfo;
+    use serde_json::json;
+
+    #[test]
+    fn update_check_accepts_numbers_and_strings() {
+        for (value, expected) in [
+            (json!(1_700_000_000_000_u64), Some(1_700_000_000_000)),
+            (json!("1700000000000"), Some(1_700_000_000_000)),
+            (json!("soon"), None),
+            (json!(null), None),
+        ] {
+            let worker: WorkerInfo =
+                serde_json::from_value(json!({ "lastUpdateChecked": value })).expect("json");
+            assert_eq!(worker.last_update_checked, expected);
+        }
+    }
 }

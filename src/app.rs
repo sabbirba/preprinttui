@@ -13,11 +13,11 @@ use tokio::sync::mpsc::UnboundedSender;
 use std::os::unix::fs::PermissionsExt;
 
 use crate::{
-    consts::DEFAULT_URL,
     crypto::make_jwt,
     types::{HistoryEntry, PrintStats, SseInit, WorkerInfo},
 };
 
+const DEFAULT_URL: &str = "https://api.preconnect.app";
 const KEYRING_SERVICE: &str = "preprinttui";
 const KEYRING_WORKER_KEY: &str = "worker_key";
 const KEYRING_PASSWORD: &str = "password";
@@ -276,13 +276,15 @@ impl App {
         }
     }
 
-    pub fn select(&mut self, index: usize) {
-        if index < self.list_len() {
+    pub fn select(&mut self, index: usize) -> bool {
+        let valid = index < self.list_len();
+        if valid {
             match self.tab {
                 Tab::Workers => self.selected_worker = index,
                 Tab::History | Tab::Search => self.selected_history = index,
             }
         }
+        valid
     }
 
     pub fn next_item(&mut self) {

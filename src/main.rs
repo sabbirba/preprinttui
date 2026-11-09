@@ -1,5 +1,4 @@
 mod app;
-mod consts;
 mod crypto;
 mod types;
 mod ui;
@@ -8,7 +7,7 @@ use anyhow::Result;
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-        MouseButton, MouseEvent, MouseEventKind,
+        MouseButton, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -23,10 +22,11 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 
 use crate::{
     app::{App, HttpCache, RefreshData, Tab, fetch_update, read_events},
-    consts::{REFRESH_INTERVAL_SECS, TICK_RATE_MS},
     ui::{auth_modal_area, inspector_modal_area, render_ui},
 };
 
+const REFRESH_INTERVAL_SECS: u64 = 10;
+const TICK_RATE_MS: u64 = 50;
 const HELP: &str = "Interactive TUI for PreConnect printer.
 
 USAGE:
@@ -99,15 +99,6 @@ fn open_inspector(app: &mut App) {
     app.inspector_scroll = 0;
 }
 
-fn scroll(app: &mut App, down: bool) {
-    match (app.inspector_mode, down) {
-        (true, true) => app.inspector_scroll = app.inspector_scroll.saturating_add(1),
-        (true, false) => app.inspector_scroll = app.inspector_scroll.saturating_sub(1),
-        (false, true) => app.next_item(),
-        (false, false) => app.prev_item(),
-    }
-}
-
 fn handle_key(app: &mut App, key: KeyEvent, tx: &Requests) {
     if app.auth_mode {
         handle_auth_key(app, key.code, tx);
@@ -136,8 +127,18 @@ fn handle_auth_key(app: &mut App, code: KeyCode, tx: &Requests) {
 fn handle_inspector_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | ' ') => app.inspector_mode = false,
-        KeyCode::Down | KeyCode::Char('j') => scroll(app, true),
-        KeyCode::Up | KeyCode::Char('k') => scroll(app, false),
+        KeyCode::Down | KeyCode::Char('j') => app.inspector_scroll += 1,
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.inspector_scroll = app.inspector_scroll.saturating_sub(1);
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            app.next_item();
+            app.inspector_scroll = 0;
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            app.prev_item();
+            app.inspector_scroll = 0;
+        }
         _ => {}
     }
 }
@@ -187,17 +188,6 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, tx: &Requests) {
     }
 }
 
-fn handle_mouse(app: &mut App, mouse: MouseEvent, screen: Rect, tx: &Requests) {
-    match mouse.kind {
-        MouseEventKind::ScrollDown => scroll(app, true),
-        MouseEventKind::ScrollUp => scroll(app, false),
-        MouseEventKind::Down(MouseButton::Left) => {
-            handle_click(app, Position::new(mouse.column, mouse.row), screen, tx);
-        }
-        _ => {}
-    }
-}
-
 fn handle_click(app: &mut App, pos: Position, screen: Rect, tx: &Requests) {
     if app.auth_mode {
         click_auth_modal(app, pos, auth_modal_area(screen), tx);
@@ -212,8 +202,10 @@ fn handle_click(app: &mut App, pos: Position, screen: Rect, tx: &Requests) {
         click_footer(app, pos.x, tx);
     } else {
         let table_start = if screen.height < 18 { 3 } else { 4 };
-        if let Some(index) = pos.y.checked_sub(table_start) {
-            app.select(usize::from(index));
+        if let Some(index) = pos.y.checked_sub(table_start)
+            && app.select(usize::from(index))
+        {
+            open_inspector(app);
         }
     }
 }
@@ -349,10 +341,11 @@ async fn main() -> Result<()> {
         if event::poll(tick_rate)? {
             match event::read()? {
                 Event::Key(key) => handle_key(&mut app, key, &tx_req),
-                Event::Mouse(mouse) => {
+                Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
                     let size = terminal.size()?;
                     let screen = Rect::new(0, 0, size.width, size.height);
-                    handle_mouse(&mut app, mouse, screen, &tx_req);
+                    let pos = Position::new(mouse.column, mouse.row);
+                    handle_click(&mut app, pos, screen, &tx_req);
                 }
                 _ => {}
             }
