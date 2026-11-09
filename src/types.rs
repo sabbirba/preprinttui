@@ -71,6 +71,57 @@ pub struct SseInit {
     pub workers: Option<Vec<WorkerInfo>>,
 }
 
+#[derive(Clone, Deserialize)]
+pub struct Student {
+    #[serde(rename = "Student_ID")]
+    pub id: String,
+    #[serde(rename = "Name")]
+    pub name: String,
+    #[serde(rename = "Dept")]
+    pub dept: String,
+}
+
+#[derive(Deserialize)]
+pub struct StudentFile {
+    pub students: Vec<Student>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+pub struct IpInfo {
+    #[serde(default)]
+    pub success: bool,
+    pub message: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    pub city: Option<String>,
+    pub region: Option<String>,
+    pub region_code: Option<String>,
+    pub country: Option<String>,
+    pub country_code: Option<String>,
+    pub postal: Option<String>,
+    pub calling_code: Option<String>,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    #[serde(default)]
+    pub connection: IpConnection,
+    #[serde(default)]
+    pub timezone: IpTimezone,
+}
+
+#[derive(Clone, Deserialize, Default)]
+pub struct IpConnection {
+    pub asn: Option<u64>,
+    pub org: Option<String>,
+    pub isp: Option<String>,
+    pub domain: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+pub struct IpTimezone {
+    pub id: Option<String>,
+    pub utc: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::WorkerInfo;

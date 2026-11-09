@@ -7,16 +7,12 @@ use reqwest::{
     header::{ETAG, HeaderMap, HeaderName, HeaderValue, IF_NONE_MATCH},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{cell::Cell, path::PathBuf, time::Instant};
-use tokio::sync::mpsc::UnboundedSender;
-
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::{cell::Cell, collections::HashMap, net::IpAddr, path::PathBuf, time::Instant};
+use tokio::sync::mpsc::UnboundedSender;
 
-use crate::{
-    crypto::make_jwt,
-    types::{HistoryEntry, PrintStats, SseInit, WorkerInfo},
-};
+use crate::types::{HistoryEntry, IpInfo, PrintStats, SseInit, Student, StudentFile, WorkerInfo};
 
 const DEFAULT_URL: &str = "https://api.preconnect.app";
 const KEYRING_SERVICE: &str = "preprinttui";
@@ -147,6 +143,8 @@ pub struct App {
     pub inspector_scroll: usize,
     pub inspecting: List,
     pub views: [Cell<View>; 3],
+    pub ip_lookups: HashMap<String, Option<Result<IpInfo, String>>>,
+    pub students: HashMap<String, Student>,
 }
 
 impl App {
@@ -155,6 +153,7 @@ impl App {
         Self {
             worker_key,
             password,
+            students: load_students(),
             mask_credentials: true,
             status_msg: "Connecting...".to_string(),
             auto_refresh: true,
@@ -172,6 +171,10 @@ impl App {
             .as_ref()
             .filter(|(_, created)| created.elapsed().as_secs_f32() < 2.5)
             .map(|(msg, _)| msg.as_str())
+    }
+
+    pub fn is_animating(&self) -> bool {
+        self.is_loading || self.stats.is_none() || self.search_mode || self.active_toast().is_some()
     }
 
     pub fn spinner(&self) -> &'static str {
@@ -318,6 +321,46 @@ impl App {
         &self.views[list as usize]
     }
 
+    pub fn ip_at(&self, list: List, index: usize) -> Option<String> {
+        let ip = match list {
+            List::Workers => self.filtered_workers().get(index)?.ip.clone(),
+            List::Queue => self.filtered_queue().get(index)?.client_ip.clone(),
+            List::History => self.filtered_history().get(index)?.client_ip.clone(),
+        }?;
+        ip.parse::<IpAddr>().is_ok().then_some(ip)
+    }
+
+    pub fn student(&self, id: Option<&str>) -> Option<&Student> {
+        self.students.get(id?.trim())
+    }
+
+    pub fn inspected_student(&self) -> Option<&Student> {
+        let index = self.selected[self.inspecting as usize];
+        let id = match self.inspecting {
+            List::Workers => return None,
+            List::Queue => self.filtered_queue().get(index)?.student.clone(),
+            List::History => self.filtered_history().get(index)?.student.clone(),
+        };
+        self.student(id.as_deref())
+    }
+
+    pub fn inspected_ip(&self) -> Option<String> {
+        self.ip_at(self.inspecting, self.selected[self.inspecting as usize])
+    }
+
+    pub fn ips_to_preload(&self) -> Vec<String> {
+        let list = if self.inspector_mode {
+            self.inspecting
+        } else {
+            self.tab.list()
+        };
+        let selected = self.selected[list as usize];
+        (selected.saturating_sub(1)..=selected + 2)
+            .filter_map(|index| self.ip_at(list, index))
+            .filter(|ip| !self.ip_lookups.contains_key(ip))
+            .collect()
+    }
+
     pub fn move_to(&mut self, list: List, index: usize) {
         let last = self.len(list).saturating_sub(1);
         self.selected[list as usize] = index.min(last);
@@ -442,13 +485,58 @@ impl HttpCache {
     }
 }
 
-fn config_path() -> PathBuf {
+fn is_private(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
+        IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00,
+    }
+}
+
+pub async fn lookup_ip(client: &Client, ip: &str) -> Result<IpInfo, String> {
+    if ip.parse::<IpAddr>().is_ok_and(is_private) {
+        return Err("private network address".to_string());
+    }
+    let info: IpInfo = client
+        .get(format!("https://ipwho.is/{ip}"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    if info.success {
+        Ok(info)
+    } else {
+        Err(info.message.unwrap_or_else(|| "lookup failed".to_string()))
+    }
+}
+
+fn config_dir() -> PathBuf {
     dirs::home_dir()
         .map(|home| home.join(".config"))
         .or_else(dirs::config_dir)
         .unwrap_or_else(|| PathBuf::from("."))
         .join("preprinttui")
-        .join("creds.json")
+}
+
+fn legacy_creds_path() -> PathBuf {
+    config_dir().join("creds.json")
+}
+
+fn load_students() -> HashMap<String, Student> {
+    let path = std::env::var_os("PREPRINTTUI_STUDENTS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config_dir().join("students.json"));
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|data| serde_json::from_str::<StudentFile>(&data).ok())
+        .map(|file| {
+            file.students
+                .into_iter()
+                .map(|student| (student.id.trim().to_string(), student))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn non_blank(value: Option<String>) -> Option<String> {
@@ -459,32 +547,40 @@ fn load_secret(name: &str) -> Option<String> {
     non_blank(Entry::new(KEYRING_SERVICE, name).ok()?.get_password().ok())
 }
 
-fn store_secret(name: &str, value: Option<&str>) {
-    if let Ok(entry) = Entry::new(KEYRING_SERVICE, name) {
-        let _ = match value.filter(|v| !v.trim().is_empty()) {
-            Some(v) => entry.set_password(v),
-            None => entry.delete_credential(),
-        };
+fn store_secret(name: &str, value: Option<&str>) -> bool {
+    let Ok(entry) = Entry::new(KEYRING_SERVICE, name) else {
+        return false;
+    };
+    match value.filter(|v| !v.trim().is_empty()) {
+        Some(v) => entry.set_password(v).is_ok() && load_secret(name).as_deref() == Some(v),
+        None => {
+            let _ = entry.delete_credential();
+            load_secret(name).is_none()
+        }
     }
 }
 
 fn load_saved_credentials() -> (Option<String>, Option<String>) {
-    let stored: StoredCreds = std::fs::read_to_string(config_path())
-        .ok()
-        .and_then(|data| serde_json::from_str(&data).ok())
+    let legacy = std::fs::read_to_string(legacy_creds_path()).ok();
+    let stored: StoredCreds = legacy
+        .as_deref()
+        .and_then(|data| serde_json::from_str(data).ok())
         .unwrap_or_default();
-    (
+    let creds = (
         load_secret(KEYRING_WORKER_KEY).or_else(|| non_blank(stored.worker_key)),
         load_secret(KEYRING_PASSWORD).or_else(|| non_blank(stored.password)),
-    )
+    );
+    if legacy.is_some() {
+        save_credentials(creds.0.as_deref(), creds.1.as_deref());
+    }
+    creds
 }
 
 fn save_credentials(worker_key: Option<&str>, password: Option<&str>) {
-    store_secret(KEYRING_WORKER_KEY, worker_key);
-    store_secret(KEYRING_PASSWORD, password);
-
-    let path = config_path();
-    if worker_key.is_none() && password.is_none() {
+    let in_keychain =
+        store_secret(KEYRING_WORKER_KEY, worker_key) & store_secret(KEYRING_PASSWORD, password);
+    let path = legacy_creds_path();
+    if in_keychain || (worker_key.is_none() && password.is_none()) {
         let _ = std::fs::remove_file(&path);
         return;
     }
@@ -505,19 +601,12 @@ fn save_credentials(worker_key: Option<&str>, password: Option<&str>) {
 
 fn make_headers(worker_key: Option<&str>, password: Option<&str>) -> HeaderMap {
     let worker_key = worker_key.filter(|k| !k.trim().is_empty());
-    let password = password.filter(|p| !p.trim().is_empty());
-    let authorization = worker_key
-        .map(|key| format!("Bearer {}", make_jwt(key)))
-        .or_else(|| password.map(|pwd| format!("Basic {}", STANDARD.encode(format!(":{pwd}")))));
-
+    let basic = password
+        .filter(|p| !p.trim().is_empty())
+        .map(|pwd| format!("Basic {}", STANDARD.encode(format!(":{pwd}"))));
     [
-        ("authorization", authorization),
         ("x-worker-key", worker_key.map(String::from)),
-        ("x-print-password", password.map(String::from)),
-        (
-            "x-worker-ident",
-            password.map(|_| "preprinttui/1.0".to_string()),
-        ),
+        ("authorization", basic),
     ]
     .into_iter()
     .filter_map(|(name, value)| {
@@ -629,9 +718,12 @@ pub async fn read_events(
         .send()
         .await?;
 
-    if response.status() == StatusCode::UNAUTHORIZED {
+    let status = response.status();
+    if status == StatusCode::UNAUTHORIZED {
         let _ = tx_data.send(RefreshData::unauthorized());
-        return Ok(());
+    }
+    if !status.is_success() {
+        anyhow::bail!("events stream returned {status}");
     }
 
     let mut buffer = String::new();

@@ -9,7 +9,7 @@ use ratatui::{
 
 use crate::{
     app::{App, LISTS, List, Tab, View},
-    types::{HistoryEntry, WorkerInfo},
+    types::{HistoryEntry, IpInfo, WorkerInfo},
 };
 
 const WHITE: Style = Style::new().fg(Color::White);
@@ -168,10 +168,6 @@ fn centered(area: Rect, width: u16, height: u16, margin: u16) -> Rect {
 
 pub fn auth_modal_area(area: Rect) -> Rect {
     centered(area, 46, 7, 2)
-}
-
-pub fn inspector_modal_area(area: Rect) -> Rect {
-    centered(area, 72, 22, 4)
 }
 
 fn auth_hints(app: &App) -> [(&'static str, &'static str); 3] {
@@ -501,7 +497,7 @@ fn render_table<T>(
     list: List,
     items: &[&T],
     columns: &[Column<T>],
-    details: fn(&T) -> Vec<Detail<'_>>,
+    details: for<'a> fn(&'a App, &'a T) -> Vec<Detail<'a>>,
 ) {
     let selected = app.selected[list as usize];
     let visible: Vec<&Column<T>> = columns
@@ -555,7 +551,7 @@ fn render_table<T>(
 
     if let Some(item) = items.get(selected).filter(|_| show_details) {
         let mut spans = Vec::new();
-        for (min_width, label, value) in details(item) {
+        for (min_width, label, value) in details(app, item) {
             if area.width >= min_width {
                 let lead = if spans.is_empty() { "" } else { SEPARATOR };
                 spans.push(Span::styled(format!("{lead}{label}: "), DIM));
@@ -651,7 +647,7 @@ fn worker_columns() -> [Column<WorkerInfo>; 8] {
     ]
 }
 
-fn worker_details(w: &WorkerInfo) -> Vec<Detail<'_>> {
+fn worker_details<'a>(_app: &'a App, w: &'a WorkerInfo) -> Vec<Detail<'a>> {
     vec![
         (
             0,
@@ -733,14 +729,14 @@ fn history_columns() -> [Column<HistoryEntry>; 6] {
     ]
 }
 
-fn history_details(h: &HistoryEntry) -> Vec<Detail<'_>> {
+fn history_details<'a>(app: &'a App, h: &'a HistoryEntry) -> Vec<Detail<'a>> {
+    let student = match app.student(h.student.as_deref()) {
+        Some(s) => format!("{} · {} ({})", s.id, s.name, s.dept),
+        None => or_dash(h.student.as_deref()).to_string(),
+    };
     vec![
         (0, "ID", Span::styled(h.display_id(), WHITE)),
-        (
-            0,
-            "Student",
-            Span::styled(or_dash(h.student.as_deref()), LIGHT_GREEN),
-        ),
+        (0, "Student", Span::styled(student, LIGHT_GREEN)),
         (
             0,
             "Status",
@@ -860,49 +856,230 @@ fn inspected_item(app: &App) -> (String, String) {
     .unwrap_or_else(|| (" Details ".to_string(), "{}".to_string()))
 }
 
-fn inspector_body_height(modal: Rect) -> usize {
-    usize::from(modal.height.saturating_sub(3))
+const INSPECTOR_HINTS: [(&str, &str); 3] =
+    [("esc", "close"), ("←/→", "prev/next"), ("↑/↓", "scroll")];
+const SCROLL_COUNTER_WIDTH: usize = 18;
+
+type Field = (&'static str, Option<String>);
+
+struct InspectorLayout {
+    title: String,
+    rows: Vec<Line<'static>>,
+    modal: Rect,
+}
+
+impl InspectorLayout {
+    fn body_height(&self) -> usize {
+        usize::from(self.modal.height.saturating_sub(3))
+    }
+
+    fn max_scroll(&self) -> usize {
+        self.rows.len().saturating_sub(self.body_height())
+    }
+}
+
+fn field_rows(rows: Vec<[Field; 2]>) -> Vec<Line<'static>> {
+    let text = |value: Option<String>| value.unwrap_or_else(|| "-".to_string());
+    let left_width = rows
+        .iter()
+        .map(|[(_, value), _]| value.as_deref().map_or(1, |v| v.chars().count()))
+        .max()
+        .unwrap_or(0);
+    rows.into_iter()
+        .map(|[(left_label, left), (right_label, right)]| {
+            Line::from(vec![
+                Span::styled(format!("{left_label:<9}"), DIM),
+                Span::styled(format!("{:<left_width$}  ", text(left)), WHITE),
+                Span::styled(format!("{right_label:<9}"), DIM),
+                Span::styled(text(right), WHITE),
+            ])
+        })
+        .collect()
+}
+
+fn with_code(name: Option<&String>, code: Option<&String>) -> Option<String> {
+    match (name, code) {
+        (Some(name), Some(code)) => Some(format!("{name} ({code})")),
+        (name, _) => name.cloned(),
+    }
+}
+
+fn ip_info_rows(ip: &str, info: &IpInfo) -> Vec<[Field; 2]> {
+    let place = |lat: Option<f64>, lon: Option<f64>| Some(format!("{:.4}, {:.4}", lat?, lon?));
+    let timezone = match (&info.timezone.id, &info.timezone.utc) {
+        (Some(id), Some(utc)) => Some(format!("{id} ({utc})")),
+        (id, _) => id.clone(),
+    };
+    vec![
+        [
+            (
+                "IP",
+                Some(format!("{ip} {}", info.kind.as_deref().unwrap_or(""))),
+            ),
+            (
+                "Country",
+                with_code(info.country.as_ref(), info.country_code.as_ref()),
+            ),
+        ],
+        [
+            ("City", info.city.clone()),
+            (
+                "Region",
+                with_code(info.region.as_ref(), info.region_code.as_ref()),
+            ),
+        ],
+        [
+            ("ISP", info.connection.isp.clone()),
+            ("Org", info.connection.org.clone()),
+        ],
+        [
+            ("ASN", info.connection.asn.map(|asn| format!("AS{asn}"))),
+            ("Domain", info.connection.domain.clone()),
+        ],
+        [
+            ("Timezone", timezone),
+            ("Lat/Lon", place(info.latitude, info.longitude)),
+        ],
+        [
+            ("Postal", info.postal.clone()),
+            (
+                "Calling",
+                info.calling_code.as_ref().map(|code| format!("+{code}")),
+            ),
+        ],
+    ]
+}
+
+fn summary_lines(app: &App) -> Vec<Line<'static>> {
+    let mut rows: Vec<[Field; 2]> = app
+        .inspected_student()
+        .map(|s| {
+            [
+                ("Name", Some(s.name.clone())),
+                ("Dept", Some(s.dept.clone())),
+            ]
+        })
+        .into_iter()
+        .collect();
+    let mut padding = 0;
+    if let Some(ip) = app.inspected_ip() {
+        match app.ip_lookups.get(&ip) {
+            Some(Some(Ok(info))) => rows.extend(ip_info_rows(&ip, info)),
+            Some(Some(Err(reason))) => {
+                rows.push([("IP", Some(ip.clone())), ("Lookup", Some(reason.clone()))]);
+            }
+            _ => {
+                rows.push([
+                    ("IP", Some(ip.clone())),
+                    ("Lookup", Some("looking up...".to_string())),
+                ]);
+                padding = 5;
+            }
+        }
+    }
+    let mut lines = field_rows(rows);
+    lines.extend(std::iter::repeat_n(Line::default(), padding));
+    lines
+}
+
+fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    let mut rows: Vec<Vec<Span<'static>>> = vec![Vec::new()];
+    let mut used = 0;
+    for span in line.spans {
+        let mut rest: Vec<char> = span.content.chars().collect();
+        while !rest.is_empty() {
+            if used == width {
+                rows.push(Vec::new());
+                used = 0;
+            }
+            let take = rest.len().min(width - used);
+            used += take;
+            if let Some(row) = rows.last_mut() {
+                row.push(Span::styled(
+                    rest.drain(..take).collect::<String>(),
+                    span.style,
+                ));
+            }
+        }
+    }
+    rows.into_iter().map(Line::from).collect()
+}
+
+fn inspector_layout(app: &App, area: Rect) -> InspectorLayout {
+    let (title, json) = inspected_item(app);
+    let lookup = summary_lines(app);
+    let details: Vec<Line<'static>> = json
+        .lines()
+        .map(|line| Line::styled(line.to_string(), WHITE))
+        .collect();
+    let content_width = lookup
+        .iter()
+        .chain(&details)
+        .map(Line::width)
+        .chain([
+            usize::from(hints_width(&INSPECTOR_HINTS, SEPARATOR)) + SCROLL_COUNTER_WIDTH,
+            title.chars().count() + 2,
+        ])
+        .max()
+        .unwrap_or(0);
+    let inner_width = content_width
+        .min(usize::from(area.width.saturating_sub(6)))
+        .max(1);
+
+    let mut lines = lookup;
+    if !lines.is_empty() {
+        lines.push(Line::styled("─".repeat(inner_width), DIM));
+    }
+    lines.extend(details);
+    let rows: Vec<Line<'static>> = lines
+        .into_iter()
+        .flat_map(|line| wrap_line(line, inner_width))
+        .collect();
+
+    let modal = centered(
+        area,
+        u16::try_from(inner_width + 2).unwrap_or(u16::MAX),
+        u16::try_from(rows.len() + 3).unwrap_or(u16::MAX),
+        4,
+    );
+    InspectorLayout { title, rows, modal }
+}
+
+pub fn inspector_modal_area(app: &App, area: Rect) -> Rect {
+    inspector_layout(app, area).modal
 }
 
 pub fn inspector_max_scroll(app: &App, area: Rect) -> usize {
-    let body_height = inspector_body_height(inspector_modal_area(area));
-    inspected_item(app)
-        .1
-        .lines()
-        .count()
-        .saturating_sub(body_height)
+    inspector_layout(app, area).max_scroll()
 }
 
 fn render_inspector_modal(app: &App, frame: &mut Frame, area: Rect) {
-    let modal = inspector_modal_area(area);
+    let layout = inspector_layout(app, area);
+    let modal = layout.modal;
     frame.render_widget(Clear, modal);
 
-    let (title, json) = inspected_item(app);
-    let lines: Vec<&str> = json.lines().collect();
-    let body_height = inspector_body_height(modal);
-    let scroll = app.inspector_scroll.min(inspector_max_scroll(app, area));
+    let total = layout.rows.len();
+    let body_height = layout.body_height();
+    let scroll = app.inspector_scroll.min(layout.max_scroll());
 
-    let block = panel(title, WHITE);
+    let block = panel(layout.title, WHITE);
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
     let [body, hint_area] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
 
-    let text: Vec<Line> = lines
-        .iter()
+    let text: Vec<Line> = layout
+        .rows
+        .into_iter()
         .skip(scroll)
         .take(body_height)
-        .map(|line| Line::styled(*line, WHITE))
         .collect();
     frame.render_widget(Paragraph::new(text), body);
 
-    let mut hint = key_hints(
-        &[("esc", "close"), ("←/→", "prev/next"), ("↑/↓", "scroll")],
-        SEPARATOR,
-    );
-    if lines.len() > body_height {
+    let mut hint = key_hints(&INSPECTOR_HINTS, SEPARATOR);
+    if total > body_height {
         hint.push(Span::styled(
-            format!("{SEPARATOR}line {}/{}", scroll + 1, lines.len()),
+            format!("{SEPARATOR}line {}/{}", scroll + 1, total),
             DIM,
         ));
     }

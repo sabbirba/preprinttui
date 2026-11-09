@@ -2,6 +2,15 @@
 
 Active since `0.1.0`.
 
+### 0.1.15
+
+- Fixed a reconnect loop that flooded the API with event stream requests whenever it answered with an error such as 429 or 401. Retries now back off from 0.5 seconds up to 30 seconds.
+- The details popup shows an IP lookup (country, city, ISP, organization, ASN, timezone, coordinates) and the student's name and department when a local student list is present.
+- IP lookups preload for the rows around the selection.
+- The details popup sizes its width and height to its content and wraps long lines instead of cutting them.
+- The password is stored in the macOS keychain only, the old plain text file is migrated and removed, and only one auth header is sent.
+- The screen redraws only when something changes.
+
 ### 0.1.14
 
 - Restored the previous table column widths and spacing.

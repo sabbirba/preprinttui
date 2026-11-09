@@ -1,5 +1,4 @@
 mod app;
-mod crypto;
 mod types;
 mod ui;
 
@@ -17,11 +16,15 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Position, Rect},
 };
-use std::{io, time::Duration};
+use std::{
+    io,
+    time::{Duration, Instant},
+};
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 use crate::{
-    app::{App, HttpCache, List, RefreshData, Tab, fetch_update, read_events},
+    app::{App, HttpCache, List, RefreshData, Tab, fetch_update, lookup_ip, read_events},
+    types::IpInfo,
     ui::{
         auth_hint_at, auth_modal_area, footer_key_at, inspector_max_scroll, inspector_modal_area,
         list_row_at, render_ui, tab_at,
@@ -30,6 +33,10 @@ use crate::{
 
 const REFRESH_INTERVAL_SECS: u64 = 10;
 const TICK_RATE_MS: u64 = 16;
+const CLOCK_REDRAW: Duration = Duration::from_secs(1);
+const MIN_STREAM_RETRY: Duration = Duration::from_millis(500);
+const MAX_STREAM_RETRY: Duration = Duration::from_secs(30);
+const HEALTHY_STREAM: Duration = Duration::from_secs(5);
 const HELP: &str = "Interactive TUI for PreConnect printer.
 
 USAGE:
@@ -217,7 +224,7 @@ fn handle_click(app: &mut App, pos: Position, screen: Rect, tx: &Requests) {
             _ => {}
         }
     } else if app.inspector_mode {
-        let modal = inspector_modal_area(screen);
+        let modal = inspector_modal_area(app, screen);
         if !modal.contains(pos) || pos.y == modal.y + modal.height.saturating_sub(2) {
             app.inspector_mode = false;
         }
@@ -242,21 +249,29 @@ fn handle_click(app: &mut App, pos: Position, screen: Rect, tx: &Requests) {
     }
 }
 
-fn spawn_fetcher(initial: FetchReq, tx_data: UnboundedSender<RefreshData>) -> Requests {
-    let (tx_req, mut rx_req) = mpsc::unbounded_channel::<FetchReq>();
-    let client = reqwest::Client::builder()
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .tcp_nodelay(true)
         .tcp_keepalive(Some(Duration::from_secs(60)))
         .pool_idle_timeout(Some(Duration::from_secs(90)))
         .pool_max_idle_per_host(8)
         .build()
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
 
+fn spawn_fetcher(
+    client: reqwest::Client,
+    initial: FetchReq,
+    tx_data: UnboundedSender<RefreshData>,
+) -> Requests {
+    let (tx_req, mut rx_req) = mpsc::unbounded_channel::<FetchReq>();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(REFRESH_INTERVAL_SECS));
         let mut cache = HttpCache::default();
         let mut last = initial;
+        let mut stream_at = tokio::time::Instant::now();
+        let mut backoff = MIN_STREAM_RETRY;
 
         loop {
             let fetch_now = tokio::select! {
@@ -267,10 +282,14 @@ fn spawn_fetcher(initial: FetchReq, tx_data: UnboundedSender<RefreshData>) -> Re
                     last = req;
                     true
                 }
-                res = read_events(&client, last.worker_key.as_deref(), last.password.as_deref(), &tx_data, &mut cache) => {
-                    if res.is_err() {
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                    }
+                healthy = async {
+                    tokio::time::sleep_until(stream_at).await;
+                    let started = tokio::time::Instant::now();
+                    let res = read_events(&client, last.worker_key.as_deref(), last.password.as_deref(), &tx_data, &mut cache).await;
+                    res.is_ok() && started.elapsed() >= HEALTHY_STREAM
+                } => {
+                    backoff = if healthy { MIN_STREAM_RETRY } else { (backoff * 2).min(MAX_STREAM_RETRY) };
+                    stream_at = tokio::time::Instant::now() + if healthy { Duration::ZERO } else { backoff };
                     false
                 }
                 _ = interval.tick() => last.auto_refresh,
@@ -311,7 +330,9 @@ async fn main() -> Result<()> {
 
     let mut app = App::new();
     let (tx_data, mut rx_data) = mpsc::unbounded_channel::<RefreshData>();
-    let tx_req = spawn_fetcher(FetchReq::from_app(&app), tx_data);
+    let client = http_client();
+    let tx_req = spawn_fetcher(client.clone(), FetchReq::from_app(&app), tx_data);
+    let (tx_lookup, mut rx_lookup) = mpsc::unbounded_channel::<(String, Result<IpInfo, String>)>();
     request(&app, &tx_req);
 
     enable_raw_mode()?;
@@ -320,15 +341,35 @@ async fn main() -> Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
     let tick_rate = Duration::from_millis(TICK_RATE_MS);
 
+    let mut dirty = true;
+    let mut last_draw = Instant::now();
     while !app.should_quit {
         app.tick_count = app.tick_count.wrapping_add(1);
         while let Ok(data) = rx_data.try_recv() {
             app.apply_data(data);
+            dirty = true;
+        }
+        while let Ok((ip, result)) = rx_lookup.try_recv() {
+            app.ip_lookups.insert(ip, Some(result));
+            dirty = true;
+        }
+        for ip in app.ips_to_preload() {
+            app.ip_lookups.insert(ip.clone(), None);
+            let (client, tx) = (client.clone(), tx_lookup.clone());
+            tokio::spawn(async move {
+                let result = lookup_ip(&client, &ip).await;
+                let _ = tx.send((ip, result));
+            });
         }
 
-        terminal.draw(|f| render_ui(&app, f))?;
+        if dirty || app.is_animating() || last_draw.elapsed() >= CLOCK_REDRAW {
+            terminal.draw(|f| render_ui(&app, f))?;
+            dirty = false;
+            last_draw = Instant::now();
+        }
 
         if event::poll(tick_rate)? {
+            dirty = true;
             let size = terminal.size()?;
             let screen = Rect::new(0, 0, size.width, size.height);
             match event::read()? {
