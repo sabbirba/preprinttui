@@ -2,6 +2,14 @@
 
 Active since `0.1.0`.
 
+### 0.1.9
+
+- Clicking a worker or job row opens its details popup, and the left and right arrows step to the previous or next item inside it.
+- Removed wheel and trackpad scrolling.
+- Added a CHECKED column showing when each worker last checked for updates.
+- Columns now line up at every terminal width.
+- Simplified the codebase by about a quarter and added rendering tests.
+
 ### 0.1.8
 
 - Implemented real-time Server-Sent Events (SSE) stream (`/print/events`) eliminating periodic polling overhead.
