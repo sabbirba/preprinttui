@@ -22,7 +22,7 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 
 use crate::{
     app::{App, HttpCache, RefreshData, Tab, fetch_update, read_events},
-    ui::{auth_modal_area, inspector_modal_area, render_ui},
+    ui::{auth_modal_area, inspector_max_scroll, inspector_modal_area, render_ui},
 };
 
 const REFRESH_INTERVAL_SECS: u64 = 10;
@@ -339,16 +339,24 @@ async fn main() -> Result<()> {
         terminal.draw(|f| render_ui(&app, f))?;
 
         if event::poll(tick_rate)? {
+            let size = terminal.size()?;
+            let screen = Rect::new(0, 0, size.width, size.height);
             match event::read()? {
                 Event::Key(key) => handle_key(&mut app, key, &tx_req),
-                Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
-                    let size = terminal.size()?;
-                    let screen = Rect::new(0, 0, size.width, size.height);
-                    let pos = Position::new(mouse.column, mouse.row);
-                    handle_click(&mut app, pos, screen, &tx_req);
-                }
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        let pos = Position::new(mouse.column, mouse.row);
+                        handle_click(&mut app, pos, screen, &tx_req);
+                    }
+                    MouseEventKind::ScrollDown if app.inspector_mode => app.inspector_scroll += 1,
+                    MouseEventKind::ScrollUp if app.inspector_mode => {
+                        app.inspector_scroll = app.inspector_scroll.saturating_sub(1);
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
+            app.inspector_scroll = app.inspector_scroll.min(inspector_max_scroll(&app, screen));
         }
     }
 

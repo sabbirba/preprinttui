@@ -2,6 +2,11 @@
 
 Active since `0.1.0`.
 
+### 0.1.10
+
+- Trackpad and mouse wheel scrolling now scroll the details popup, and leave the list alone.
+- The details popup stops scrolling at its last line and shows that line fully.
+
 ### 0.1.9
 
 - Clicking a worker or job row opens its details popup, and the left and right arrows step to the previous or next item inside it.

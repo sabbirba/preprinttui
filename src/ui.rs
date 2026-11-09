@@ -744,16 +744,27 @@ fn inspected_item(app: &App) -> (String, String) {
     }
 }
 
+fn inspector_body_height(modal: Rect) -> usize {
+    usize::from(modal.height.saturating_sub(3))
+}
+
+pub fn inspector_max_scroll(app: &App, area: Rect) -> usize {
+    let body_height = inspector_body_height(inspector_modal_area(area));
+    inspected_item(app)
+        .1
+        .lines()
+        .count()
+        .saturating_sub(body_height)
+}
+
 fn render_inspector_modal(app: &App, frame: &mut Frame, area: Rect) {
     let modal = inspector_modal_area(area);
     frame.render_widget(Clear, modal);
 
     let (title, json) = inspected_item(app);
     let lines: Vec<&str> = json.lines().collect();
-    let body_height = usize::from(modal.height.saturating_sub(4));
-    let scroll = app
-        .inspector_scroll
-        .min(lines.len().saturating_sub(body_height));
+    let body_height = inspector_body_height(modal);
+    let scroll = app.inspector_scroll.min(inspector_max_scroll(app, area));
 
     let block = panel(title, WHITE);
     let inner = block.inner(modal);
