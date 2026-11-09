@@ -2,6 +2,11 @@
 
 Active since `0.1.0`.
 
+### 0.1.13
+
+- Removed the summary line under the tabs.
+- Columns now fit their content and the blank row under the column titles is gone.
+
 ### 0.1.12
 
 - Added a Queue tab with the jobs waiting to print.

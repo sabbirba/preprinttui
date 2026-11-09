@@ -17,11 +17,6 @@ pub struct PrintStats {
     pub uptime_seconds: Option<u64>,
     pub active_printers: Option<usize>,
     pub queued_count: Option<usize>,
-    pub queue_bytes: Option<u64>,
-    pub claimed_count: Option<usize>,
-    pub printed_count: Option<usize>,
-    pub failed_count: Option<usize>,
-    pub expired_count: Option<usize>,
     pub history_count: Option<usize>,
     pub last_job_at: Option<u64>,
 }
