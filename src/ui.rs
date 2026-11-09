@@ -8,7 +8,7 @@ use ratatui::{
 };
 
 use crate::{
-    app::{App, List, Tab, View},
+    app::{App, LISTS, List, Tab, View},
     types::{HistoryEntry, WorkerInfo},
 };
 
@@ -26,6 +26,9 @@ const SELECTED_ROW: Style = Style::new()
     .bg(Color::Rgb(35, 35, 40))
     .add_modifier(Modifier::BOLD);
 const SEPARATOR: &str = "  •  ";
+const YELLOW: Style = Style::new().fg(Color::Yellow);
+const RED: Style = Style::new().fg(Color::Red);
+const STALE_AFTER_MS: u64 = 30_000;
 const NARROW_SEPARATOR: &str = " • ";
 const FOOTER_HINTS: [(&str, &str); 7] = [
     ("tab", "switch"),
@@ -219,7 +222,7 @@ pub fn tab_at(app: &App, x: u16) -> Option<Tab> {
 }
 
 pub fn list_row_at(app: &App, pos: Position) -> Option<(List, usize)> {
-    [List::Workers, List::History].into_iter().find_map(|list| {
+    LISTS.into_iter().find_map(|list| {
         let view = app.view(list).get();
         let row = pos.y.checked_sub(view.area.y + TABLE_CHROME_ROWS)?;
         (view.area.contains(pos) && row < view.area.height.saturating_sub(TABLE_CHROME_ROWS + 1))
@@ -235,7 +238,7 @@ pub fn render_ui(app: &App, frame: &mut Frame) {
         return;
     }
 
-    for list in [List::Workers, List::History] {
+    for list in LISTS {
         let offset = app.view(list).get().offset;
         app.view(list).set(View {
             area: Rect::default(),
@@ -254,7 +257,8 @@ pub fn render_ui(app: &App, frame: &mut Frame) {
     render_header(app, frame, header, compact);
     match app.tab {
         Tab::Workers => render_workers(app, frame, body),
-        Tab::History => render_history(app, frame, body),
+        Tab::Queue => render_jobs(app, frame, body, List::Queue),
+        Tab::History => render_jobs(app, frame, body, List::History),
         Tab::Search => render_search(app, frame, body),
     }
     render_footer(app, frame, footer);
@@ -274,7 +278,7 @@ fn tab_title(name: &str, has_data: bool, count: usize) -> String {
     }
 }
 
-fn tab_titles(app: &App) -> [(Tab, String); 3] {
+fn tab_titles(app: &App) -> [(Tab, String); 4] {
     let stats = app.stats.as_ref();
     [
         (
@@ -285,6 +289,16 @@ fn tab_titles(app: &App) -> [(Tab, String); 3] {
                 stats
                     .and_then(|s| s.active_printers)
                     .unwrap_or(app.workers.len()),
+            ),
+        ),
+        (
+            Tab::Queue,
+            tab_title(
+                "Queue",
+                stats.is_some() || !app.queue.is_empty(),
+                stats
+                    .and_then(|s| s.queued_count)
+                    .unwrap_or(app.queue.len()),
             ),
         ),
         (
@@ -363,9 +377,51 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect, compact: bool) {
     );
 
     if !compact && area.height >= 2 {
-        let rule = Paragraph::new("─".repeat(usize::from(area.width))).style(DIM);
-        frame.render_widget(rule, Rect::new(area.x, area.y + 1, area.width, 1));
+        let mut rule = summary_spans(app);
+        let used: usize = rule.iter().map(Span::width).sum();
+        rule.push(Span::styled(
+            "─".repeat(usize::from(area.width).saturating_sub(used)),
+            DIM,
+        ));
+        frame.render_widget(
+            Paragraph::new(Line::from(rule)),
+            Rect::new(area.x, area.y + 1, area.width, 1),
+        );
     }
+}
+
+fn summary_spans(app: &App) -> Vec<Span<'static>> {
+    let Some(stats) = app.stats.as_ref() else {
+        return Vec::new();
+    };
+    let count = |value: Option<usize>| value.unwrap_or(0);
+    let failed = count(stats.failed_count);
+    let parts = [
+        (
+            format!(
+                "queued {} ({})",
+                count(stats.queued_count),
+                fmt_bytes(stats.queue_bytes.unwrap_or(0))
+            ),
+            WHITE,
+        ),
+        (format!("claimed {}", count(stats.claimed_count)), WHITE),
+        (format!("printed {}", count(stats.printed_count)), GREEN),
+        (
+            format!("failed {failed}"),
+            if failed > 0 { RED } else { DIM },
+        ),
+        (format!("expired {}", count(stats.expired_count)), DIM),
+    ];
+    let mut spans = vec![Span::styled("─ ", DIM)];
+    for (i, (text, style)) in parts.into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(SEPARATOR, DIM));
+        }
+        spans.push(Span::styled(text, style));
+    }
+    spans.push(Span::styled(" ", DIM));
+    spans
 }
 
 fn status_span(app: &App) -> Span<'_> {
@@ -490,7 +546,7 @@ fn render_table<T>(
     columns: &[Column<T>],
     details: fn(&T) -> Vec<Detail<'_>>,
 ) {
-    let selected = app.selected(list);
+    let selected = app.selected[list as usize];
     let visible: Vec<&Column<T>> = columns
         .iter()
         .filter(|c| area.width >= c.min_width)
@@ -574,6 +630,17 @@ fn worker_last_check(worker: &WorkerInfo) -> String {
     )
 }
 
+fn worker_status(worker: &WorkerInfo) -> Span<'static> {
+    let silent_for = worker
+        .last_seen_at
+        .map(|t| now_millis().saturating_sub(to_millis(t)));
+    if silent_for.is_some_and(|ms| ms > STALE_AFTER_MS) {
+        Span::styled("stale", YELLOW)
+    } else {
+        Span::styled("online", GREEN)
+    }
+}
+
 fn worker_columns() -> [Column<WorkerInfo>; 8] {
     [
         Column {
@@ -622,7 +689,7 @@ fn worker_columns() -> [Column<WorkerInfo>; 8] {
             min_width: 0,
             title: "STATUS",
             width: Constraint::Fill(10),
-            cell: |_| Span::styled("online", GREEN),
+            cell: worker_status,
         },
     ]
 }
@@ -634,7 +701,7 @@ fn worker_details(w: &WorkerInfo) -> Vec<Detail<'_>> {
             "Ident",
             Span::styled(w.id.as_deref().unwrap_or("?"), BOLD),
         ),
-        (0, "Status", Span::styled("online", GREEN)),
+        (0, "Status", worker_status(w)),
         (
             0,
             "Jobs",
@@ -767,18 +834,22 @@ fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
     }
 }
 
-fn render_history(app: &App, frame: &mut Frame, area: Rect) {
-    let items = app.filtered_history();
+fn render_jobs(app: &App, frame: &mut Frame, area: Rect, list: List) {
+    let (items, title, empty) = if list == List::Queue {
+        (app.filtered_queue(), " Queue ", "Queue is empty.")
+    } else {
+        (app.filtered_history(), " History ", "No history.")
+    };
     if items.is_empty() {
-        let msg = empty_message(app, "Loading...", "No matches.", "No history.");
-        render_empty(frame, area, " History ", msg);
+        let msg = empty_message(app, "Loading...", "No matches.", empty);
+        render_empty(frame, area, title, msg);
     } else {
         render_table(
             app,
             frame,
             area,
-            " History ",
-            List::History,
+            title,
+            list,
             &items,
             &history_columns(),
             history_details,
@@ -804,37 +875,32 @@ fn render_search(app: &App, frame: &mut Frame, area: Rect) {
                 Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)])
                     .areas(area);
             render_workers(app, frame, top);
-            render_history(app, frame, bottom);
+            render_jobs(app, frame, bottom, List::History);
         }
         (true, false) => render_workers(app, frame, area),
-        _ => render_history(app, frame, area),
+        _ => render_jobs(app, frame, area, List::History),
     }
 }
 
 fn inspected_item(app: &App) -> (String, String) {
+    let index = app.selected[app.inspecting as usize];
+    let job = |h: &&HistoryEntry| {
+        (
+            format!(" Job: #{} ", h.display_id()),
+            serde_json::to_string_pretty(h).unwrap_or_default(),
+        )
+    };
     match app.inspecting {
-        List::Workers => app.filtered_workers().get(app.selected_worker).map_or_else(
-            || (" Worker ".to_string(), "{}".to_string()),
-            |w| {
-                (
-                    format!(" Worker: {} ", w.id.as_deref().unwrap_or("worker")),
-                    serde_json::to_string_pretty(w).unwrap_or_default(),
-                )
-            },
-        ),
-        List::History => app
-            .filtered_history()
-            .get(app.selected_history)
-            .map_or_else(
-                || (" History ".to_string(), "{}".to_string()),
-                |h| {
-                    (
-                        format!(" Job: #{} ", h.display_id()),
-                        serde_json::to_string_pretty(h).unwrap_or_default(),
-                    )
-                },
-            ),
+        List::Workers => app.filtered_workers().get(index).map(|w| {
+            (
+                format!(" Worker: {} ", w.id.as_deref().unwrap_or("worker")),
+                serde_json::to_string_pretty(w).unwrap_or_default(),
+            )
+        }),
+        List::Queue => app.filtered_queue().get(index).map(job),
+        List::History => app.filtered_history().get(index).map(job),
     }
+    .unwrap_or_else(|| (" Details ".to_string(), "{}".to_string()))
 }
 
 fn inspector_body_height(modal: Rect) -> usize {

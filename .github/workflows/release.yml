@@ -193,3 +193,38 @@ jobs:
         run: cargo publish --allow-dirty
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  homebrew:
+    name: Update Homebrew Tap
+    needs: [setup, publish]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Tap
+        uses: actions/checkout@v4
+        with:
+          repository: sabbirba/homebrew-tap
+          ssh-key: ${{ secrets.TAP_DEPLOY_KEY }}
+
+      - name: Update Formula
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.setup.outputs.tag }}
+          VERSION: ${{ needs.setup.outputs.version }}
+        run: |
+          gh release download "$TAG" -R "${{ github.repository }}" -p "*.tar.gz" -D assets
+          for asset in macos-arm64 linux-musl-x86_64; do
+            sha=$(sha256sum "assets/preprinttui-$asset.tar.gz" | cut -d' ' -f1)
+            perl -0pi -e "s{(preprinttui-$asset\.tar\.gz\"\n\s*sha256 \")[0-9a-f]+}{\${1}$sha}" Formula/preprinttui.rb
+          done
+          perl -pi -e "s/^  version \".*\"/  version \"$VERSION\"/" Formula/preprinttui.rb
+          rm -rf assets
+
+      - name: Push Formula
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+        run: |
+          git config user.name "Sabbir Bin Abbas"
+          git config user.email "mail@sabbirba.com"
+          git commit -am "Update preprinttui to $VERSION" || exit 0
+          git push

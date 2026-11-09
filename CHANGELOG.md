@@ -2,6 +2,15 @@
 
 Active since `0.1.0`.
 
+### 0.1.12
+
+- Added a Queue tab with the jobs waiting to print.
+- Added a summary line with queued, claimed, printed, failed and expired counts.
+- Workers that stop sending heartbeats for 30 seconds are marked stale.
+- Added g/G, Home/End and PageUp/PageDown navigation.
+- Live job events update the lists instantly without downloading the history again, and the screen refreshes every 16ms.
+- Releases now update the Homebrew tap automatically.
+
 ### 0.1.11
 
 - The list only redraws the rows on screen, so long histories no longer slow the display down.

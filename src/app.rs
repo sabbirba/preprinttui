@@ -33,6 +33,7 @@ struct StoredCreds {
 pub enum Tab {
     #[default]
     Workers,
+    Queue,
     History,
     Search,
 }
@@ -40,7 +41,8 @@ pub enum Tab {
 impl Tab {
     pub fn next(self) -> Self {
         match self {
-            Self::Workers => Self::History,
+            Self::Workers => Self::Queue,
+            Self::Queue => Self::History,
             Self::History => Self::Search,
             Self::Search => Self::Workers,
         }
@@ -49,7 +51,8 @@ impl Tab {
     pub fn prev(self) -> Self {
         match self {
             Self::Workers => Self::Search,
-            Self::History => Self::Workers,
+            Self::Queue => Self::Workers,
+            Self::History => Self::Queue,
             Self::Search => Self::History,
         }
     }
@@ -57,10 +60,10 @@ impl Tab {
 
 impl Tab {
     pub fn list(self) -> List {
-        if self == Self::Workers {
-            List::Workers
-        } else {
-            List::History
+        match self {
+            Self::Workers => List::Workers,
+            Self::Queue => List::Queue,
+            Self::History | Self::Search => List::History,
         }
     }
 }
@@ -69,8 +72,11 @@ impl Tab {
 pub enum List {
     #[default]
     Workers,
+    Queue,
     History,
 }
+
+pub const LISTS: [List; 3] = [List::Workers, List::Queue, List::History];
 
 #[derive(Copy, Clone, Default)]
 pub struct View {
@@ -82,6 +88,7 @@ pub struct RefreshData {
     pub stats: Option<PrintStats>,
     pub workers: Option<Vec<WorkerInfo>>,
     pub history: Option<Vec<HistoryEntry>>,
+    pub queue: Option<Vec<HistoryEntry>>,
     pub is_unauthorized: bool,
     pub timestamp: DateTime<Local>,
     pub latency_ms: Option<u64>,
@@ -97,6 +104,7 @@ impl RefreshData {
             stats,
             workers,
             history,
+            queue: None,
             is_unauthorized: false,
             timestamp: Local::now(),
             latency_ms: None,
@@ -120,8 +128,8 @@ pub struct App {
     pub uptime_anchor: Option<(Instant, u64)>,
     pub workers: Vec<WorkerInfo>,
     pub history: Vec<HistoryEntry>,
-    pub selected_worker: usize,
-    pub selected_history: usize,
+    pub queue: Vec<HistoryEntry>,
+    pub selected: [usize; 3],
     pub search_mode: bool,
     pub search_query: String,
     pub auth_mode: bool,
@@ -138,7 +146,7 @@ pub struct App {
     pub inspector_mode: bool,
     pub inspector_scroll: usize,
     pub inspecting: List,
-    pub views: [Cell<View>; 2],
+    pub views: [Cell<View>; 3],
 }
 
 impl App {
@@ -237,6 +245,13 @@ impl App {
             self.clamp_selection();
         }
 
+        if let Some(queue) = data.queue
+            && self.queue != queue
+        {
+            self.queue = queue;
+            self.clamp_selection();
+        }
+
         if data.latency_ms.is_some() {
             self.latency_ms = data.latency_ms;
         }
@@ -263,9 +278,16 @@ impl App {
     }
 
     pub fn filtered_history(&self) -> Vec<&HistoryEntry> {
+        self.filter_jobs(&self.history)
+    }
+
+    pub fn filtered_queue(&self) -> Vec<&HistoryEntry> {
+        self.filter_jobs(&self.queue)
+    }
+
+    fn filter_jobs<'a>(&self, jobs: &'a [HistoryEntry]) -> Vec<&'a HistoryEntry> {
         let query = self.search_query.to_lowercase();
-        self.history
-            .iter()
+        jobs.iter()
             .filter(|h| {
                 query.is_empty()
                     || matches_query(
@@ -287,14 +309,8 @@ impl App {
     pub fn len(&self, list: List) -> usize {
         match list {
             List::Workers => self.filtered_workers().len(),
+            List::Queue => self.filtered_queue().len(),
             List::History => self.filtered_history().len(),
-        }
-    }
-
-    pub fn selected(&self, list: List) -> usize {
-        match list {
-            List::Workers => self.selected_worker,
-            List::History => self.selected_history,
         }
     }
 
@@ -302,39 +318,32 @@ impl App {
         &self.views[list as usize]
     }
 
+    pub fn move_to(&mut self, list: List, index: usize) {
+        let last = self.len(list).saturating_sub(1);
+        self.selected[list as usize] = index.min(last);
+    }
+
     pub fn select(&mut self, list: List, index: usize) -> bool {
         let valid = index < self.len(list);
         if valid {
-            match list {
-                List::Workers => self.selected_worker = index,
-                List::History => self.selected_history = index,
-            }
+            self.selected[list as usize] = index;
         }
         valid
     }
 
-    pub fn step(&mut self, list: List, forward: bool) {
-        let current = self.selected(list);
-        self.select(
-            list,
-            if forward {
-                current + 1
-            } else {
-                current.saturating_sub(1)
-            },
-        );
+    pub fn move_by(&mut self, list: List, delta: isize) {
+        let current = self.selected[list as usize];
+        self.move_to(list, current.saturating_add_signed(delta));
     }
 
     pub fn reset_selection(&mut self) {
-        self.selected_worker = 0;
-        self.selected_history = 0;
+        self.selected = [0; 3];
     }
 
     fn clamp_selection(&mut self) {
-        let last_worker = self.filtered_workers().len().saturating_sub(1);
-        let last_history = self.filtered_history().len().saturating_sub(1);
-        self.selected_worker = self.selected_worker.min(last_worker);
-        self.selected_history = self.selected_history.min(last_history);
+        for list in LISTS {
+            self.move_to(list, self.selected[list as usize]);
+        }
     }
 }
 
@@ -387,6 +396,7 @@ pub struct HttpCache {
     stats: Cached<PrintStats>,
     workers: Cached<Vec<WorkerInfo>>,
     history: Cached<Vec<HistoryEntry>>,
+    queue: Cached<Vec<HistoryEntry>>,
 }
 
 impl HttpCache {
@@ -409,6 +419,26 @@ impl HttpCache {
         self.history
             .refresh(client, headers, "/print/history")
             .await
+    }
+
+    fn apply_job(&mut self, event: &str, mut job: HistoryEntry) {
+        let id = job.display_id();
+        let history = self.history.data.get_or_insert_with(Vec::new);
+        let queue = self.queue.data.get_or_insert_with(Vec::new);
+        queue.retain(|entry| entry.display_id() != id);
+        if event == "job_queued" {
+            job.status = Some("queued".to_string());
+            job.queue_id = job.id.take();
+            history.retain(|entry| entry.display_id() != id);
+            history.insert(0, job.clone());
+            queue.push(job);
+        } else if let Some(entry) = history.iter_mut().find(|entry| entry.display_id() == id) {
+            entry.status = Some(event.trim_start_matches("job_").to_string());
+        }
+    }
+
+    async fn refresh_queue(&mut self, client: &Client, headers: &HeaderMap) -> bool {
+        self.queue.refresh(client, headers, "/print/queue").await
     }
 }
 
@@ -518,16 +548,22 @@ pub async fn fetch_update(
     if history_stale {
         unauthorized |= cache.refresh_history(client, &headers).await;
     }
+    unauthorized |= cache.refresh_queue(client, &headers).await;
 
-    let (workers, history) = if unauthorized {
-        (Some(Vec::new()), Some(Vec::new()))
+    let (workers, history, queue) = if unauthorized {
+        (Some(Vec::new()), Some(Vec::new()), Some(Vec::new()))
     } else {
-        (cache.workers.data.clone(), cache.history.data.clone())
+        (
+            cache.workers.data.clone(),
+            cache.history.data.clone(),
+            cache.queue.data.clone(),
+        )
     };
 
     RefreshData {
         is_unauthorized: unauthorized,
         latency_ms: Some(u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)),
+        queue,
         ..RefreshData::new(cache.stats.data.clone(), workers, history)
     }
 }
@@ -545,12 +581,7 @@ fn parse_event(message: &str) -> (&str, String) {
     (name, data)
 }
 
-async fn handle_event(
-    client: &Client,
-    headers: &HeaderMap,
-    cache: &mut HttpCache,
-    message: &str,
-) -> Option<RefreshData> {
+fn handle_event(cache: &mut HttpCache, message: &str) -> Option<RefreshData> {
     let (name, data) = parse_event(message);
     if data.is_empty() {
         return None;
@@ -565,28 +596,20 @@ async fn handle_event(
         }
         "stats" => {
             let stats: PrintStats = serde_json::from_str(&data).ok()?;
-            let has_new_job = stats.last_job_at != cache.last_job_at();
             cache.stats.data = Some(stats.clone());
-            let history = if has_new_job {
-                cache.refresh_history(client, headers).await;
-                cache.history.data.clone()
-            } else {
-                None
-            };
-            Some(RefreshData::new(Some(stats), None, history))
+            Some(RefreshData::new(Some(stats), None, None))
         }
         "workers" => {
             let workers: Vec<WorkerInfo> = serde_json::from_str(&data).ok()?;
             cache.workers.data = Some(workers.clone());
             Some(RefreshData::new(None, Some(workers), None))
         }
-        "job_queued" | "job_claimed" => {
-            cache.refresh_history(client, headers).await;
-            Some(RefreshData::new(
-                cache.stats.data.clone(),
-                None,
-                cache.history.data.clone(),
-            ))
+        "job_queued" | "job_claimed" | "job_printed" | "job_failed" => {
+            cache.apply_job(name, serde_json::from_str(&data).ok()?);
+            Some(RefreshData {
+                queue: cache.queue.data.clone(),
+                ..RefreshData::new(None, None, cache.history.data.clone())
+            })
         }
         _ => None,
     }
@@ -602,7 +625,7 @@ pub async fn read_events(
     let headers = make_headers(worker_key, password);
     let mut response = client
         .get(format!("{DEFAULT_URL}/print/events"))
-        .headers(headers.clone())
+        .headers(headers)
         .send()
         .await?;
 
@@ -616,7 +639,7 @@ pub async fn read_events(
         buffer.push_str(&String::from_utf8_lossy(&chunk));
         while let Some(end) = buffer.find("\n\n") {
             let message: String = buffer.drain(..end + 2).collect();
-            if let Some(update) = handle_event(client, &headers, cache, &message).await {
+            if let Some(update) = handle_event(cache, &message) {
                 let _ = tx_data.send(update);
             }
         }

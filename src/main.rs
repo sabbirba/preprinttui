@@ -29,7 +29,7 @@ use crate::{
 };
 
 const REFRESH_INTERVAL_SECS: u64 = 10;
-const TICK_RATE_MS: u64 = 50;
+const TICK_RATE_MS: u64 = 16;
 const HELP: &str = "Interactive TUI for PreConnect printer.
 
 USAGE:
@@ -94,6 +94,21 @@ fn open_inspector(app: &mut App, list: List) {
     app.inspector_scroll = 0;
 }
 
+fn navigate(app: &mut App, code: KeyCode) {
+    let list = app.tab.list();
+    let page =
+        isize::try_from(app.view(list).get().area.height.saturating_sub(4).max(1)).unwrap_or(1);
+    match code {
+        KeyCode::Down => app.move_by(list, 1),
+        KeyCode::Up => app.move_by(list, -1),
+        KeyCode::PageDown => app.move_by(list, page),
+        KeyCode::PageUp => app.move_by(list, -page),
+        KeyCode::Home => app.move_to(list, 0),
+        KeyCode::End => app.move_to(list, usize::MAX),
+        _ => {}
+    }
+}
+
 fn handle_key(app: &mut App, key: KeyEvent, tx: &Requests) {
     if app.auth_mode {
         handle_auth_key(app, key.code, tx);
@@ -127,11 +142,11 @@ fn handle_inspector_key(app: &mut App, code: KeyCode) {
             app.inspector_scroll = app.inspector_scroll.saturating_sub(1);
         }
         KeyCode::Right | KeyCode::Char('l') => {
-            app.step(app.inspecting, true);
+            app.move_by(app.inspecting, 1);
             app.inspector_scroll = 0;
         }
         KeyCode::Left | KeyCode::Char('h') => {
-            app.step(app.inspecting, false);
+            app.move_by(app.inspecting, -1);
             app.inspector_scroll = 0;
         }
         _ => {}
@@ -144,8 +159,14 @@ fn handle_search_key(app: &mut App, code: KeyCode) {
         KeyCode::Enter => open_inspector(app, app.tab.list()),
         KeyCode::Tab => select_tab(app, app.tab.next()),
         KeyCode::BackTab => select_tab(app, app.tab.prev()),
-        KeyCode::Down => app.step(app.tab.list(), true),
-        KeyCode::Up => app.step(app.tab.list(), false),
+        KeyCode::Down
+        | KeyCode::Up
+        | KeyCode::PageDown
+        | KeyCode::PageUp
+        | KeyCode::Home
+        | KeyCode::End => {
+            navigate(app, code);
+        }
         KeyCode::Backspace => {
             app.search_query.pop();
             app.reset_selection();
@@ -165,21 +186,24 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, tx: &Requests) {
             app.should_quit = true;
         }
         KeyCode::Char('1') => select_tab(app, Tab::Workers),
-        KeyCode::Char('2') => select_tab(app, Tab::History),
-        KeyCode::Char('3') => select_tab(app, Tab::Search),
+        KeyCode::Char('2') => select_tab(app, Tab::Queue),
+        KeyCode::Char('3') => select_tab(app, Tab::History),
+        KeyCode::Char('4') => select_tab(app, Tab::Search),
+        KeyCode::Char('g') => app.move_to(app.tab.list(), 0),
+        KeyCode::Char('G') => app.move_to(app.tab.list(), usize::MAX),
         KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => select_tab(app, app.tab.next()),
         KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
             select_tab(app, app.tab.prev());
         }
         KeyCode::Enter | KeyCode::Char(' ' | 'v') => open_inspector(app, app.tab.list()),
-        KeyCode::Down | KeyCode::Char('j') => app.step(app.tab.list(), true),
-        KeyCode::Up | KeyCode::Char('k') => app.step(app.tab.list(), false),
+        KeyCode::Char('j') => app.move_by(app.tab.list(), 1),
+        KeyCode::Char('k') => app.move_by(app.tab.list(), -1),
         KeyCode::Char('/') => app.search_mode = true,
         KeyCode::Char('e' | 'c') => app.open_auth_modal(),
         KeyCode::Char('x') => clear_auth(app, tx),
         KeyCode::Char('r') => reload(app, tx),
         KeyCode::Char('a') => toggle_auto_refresh(app, tx),
-        _ => {}
+        code => navigate(app, code),
     }
 }
 
@@ -245,7 +269,7 @@ fn spawn_fetcher(initial: FetchReq, tx_data: UnboundedSender<RefreshData>) -> Re
                 }
                 res = read_events(&client, last.worker_key.as_deref(), last.password.as_deref(), &tx_data, &mut cache) => {
                     if res.is_err() {
-                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        tokio::time::sleep(Duration::from_millis(500)).await;
                     }
                     false
                 }
