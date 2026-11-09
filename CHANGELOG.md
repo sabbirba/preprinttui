@@ -2,6 +2,15 @@
 
 Active since `0.1.0`.
 
+### 0.1.11
+
+- The list only redraws the rows on screen, so long histories no longer slow the display down.
+- Moving up and down keeps the list still and moves only the cursor.
+- Removed the green row flash on live updates.
+- Latency keeps its real value instead of dropping to 0ms, and the header no longer shifts.
+- History loads in the background, so switching tabs no longer shows Loading.
+- Clicks on tabs, footer hints, password buttons and rows now match what is drawn, including after scrolling and in the split Search view.
+
 ### 0.1.10
 
 - Trackpad and mouse wheel scrolling now scroll the details popup, and leave the list alone.

@@ -1,12 +1,13 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Local};
 use keyring::Entry;
+use ratatui::layout::Rect;
 use reqwest::{
     Client, StatusCode,
     header::{ETAG, HeaderMap, HeaderName, HeaderValue, IF_NONE_MATCH},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{path::PathBuf, time::Instant};
+use std::{cell::Cell, path::PathBuf, time::Instant};
 use tokio::sync::mpsc::UnboundedSender;
 
 #[cfg(unix)]
@@ -54,6 +55,29 @@ impl Tab {
     }
 }
 
+impl Tab {
+    pub fn list(self) -> List {
+        if self == Self::Workers {
+            List::Workers
+        } else {
+            List::History
+        }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Default)]
+pub enum List {
+    #[default]
+    Workers,
+    History,
+}
+
+#[derive(Copy, Clone, Default)]
+pub struct View {
+    pub area: Rect,
+    pub offset: usize,
+}
+
 pub struct RefreshData {
     pub stats: Option<PrintStats>,
     pub workers: Option<Vec<WorkerInfo>>,
@@ -61,7 +85,6 @@ pub struct RefreshData {
     pub is_unauthorized: bool,
     pub timestamp: DateTime<Local>,
     pub latency_ms: Option<u64>,
-    pub has_new_data: bool,
 }
 
 impl RefreshData {
@@ -69,7 +92,6 @@ impl RefreshData {
         stats: Option<PrintStats>,
         workers: Option<Vec<WorkerInfo>>,
         history: Option<Vec<HistoryEntry>>,
-        has_new_data: bool,
     ) -> Self {
         Self {
             stats,
@@ -77,16 +99,14 @@ impl RefreshData {
             history,
             is_unauthorized: false,
             timestamp: Local::now(),
-            latency_ms: Some(0),
-            has_new_data,
+            latency_ms: None,
         }
     }
 
     fn unauthorized() -> Self {
         Self {
             is_unauthorized: true,
-            latency_ms: None,
-            ..Self::new(None, None, None, false)
+            ..Self::new(None, None, None)
         }
     }
 }
@@ -117,7 +137,8 @@ pub struct App {
     pub latency_ms: Option<u64>,
     pub inspector_mode: bool,
     pub inspector_scroll: usize,
-    pub flash_highlight: Option<Instant>,
+    pub inspecting: List,
+    pub views: [Cell<View>; 2],
 }
 
 impl App {
@@ -216,9 +237,8 @@ impl App {
             self.clamp_selection();
         }
 
-        self.latency_ms = data.latency_ms;
-        if data.has_new_data {
-            self.flash_highlight = Some(Instant::now());
+        if data.latency_ms.is_some() {
+            self.latency_ms = data.latency_ms;
         }
 
         self.status_msg = if self.is_unauthorized {
@@ -233,10 +253,11 @@ impl App {
         self.workers
             .iter()
             .filter(|w| {
-                matches_query(
-                    &query,
-                    &[w.id.as_deref(), w.ip.as_deref(), w.user_agent.as_deref()],
-                )
+                query.is_empty()
+                    || matches_query(
+                        &query,
+                        &[w.id.as_deref(), w.ip.as_deref(), w.user_agent.as_deref()],
+                    )
             })
             .collect()
     }
@@ -246,53 +267,62 @@ impl App {
         self.history
             .iter()
             .filter(|h| {
-                matches_query(
-                    &query,
-                    &[
-                        h.student.as_deref(),
-                        h.status.as_deref(),
-                        h.hostname.as_deref(),
-                        h.client_ip.as_deref(),
-                        h.ip.as_deref(),
-                        h.queue.as_deref(),
-                        Some(&h.display_id()),
-                    ],
-                )
+                query.is_empty()
+                    || matches_query(
+                        &query,
+                        &[
+                            h.student.as_deref(),
+                            h.status.as_deref(),
+                            h.hostname.as_deref(),
+                            h.client_ip.as_deref(),
+                            h.ip.as_deref(),
+                            h.queue.as_deref(),
+                            Some(&h.display_id()),
+                        ],
+                    )
             })
             .collect()
     }
 
-    fn list_len(&self) -> usize {
-        match self.tab {
-            Tab::Workers => self.filtered_workers().len(),
-            Tab::History | Tab::Search => self.filtered_history().len(),
+    pub fn len(&self, list: List) -> usize {
+        match list {
+            List::Workers => self.filtered_workers().len(),
+            List::History => self.filtered_history().len(),
         }
     }
 
-    fn selected(&self) -> usize {
-        match self.tab {
-            Tab::Workers => self.selected_worker,
-            Tab::History | Tab::Search => self.selected_history,
+    pub fn selected(&self, list: List) -> usize {
+        match list {
+            List::Workers => self.selected_worker,
+            List::History => self.selected_history,
         }
     }
 
-    pub fn select(&mut self, index: usize) -> bool {
-        let valid = index < self.list_len();
+    pub fn view(&self, list: List) -> &Cell<View> {
+        &self.views[list as usize]
+    }
+
+    pub fn select(&mut self, list: List, index: usize) -> bool {
+        let valid = index < self.len(list);
         if valid {
-            match self.tab {
-                Tab::Workers => self.selected_worker = index,
-                Tab::History | Tab::Search => self.selected_history = index,
+            match list {
+                List::Workers => self.selected_worker = index,
+                List::History => self.selected_history = index,
             }
         }
         valid
     }
 
-    pub fn next_item(&mut self) {
-        self.select(self.selected() + 1);
-    }
-
-    pub fn prev_item(&mut self) {
-        self.select(self.selected().saturating_sub(1));
+    pub fn step(&mut self, list: List, forward: bool) {
+        let current = self.selected(list);
+        self.select(
+            list,
+            if forward {
+                current + 1
+            } else {
+                current.saturating_sub(1)
+            },
+        );
     }
 
     pub fn reset_selection(&mut self) {
@@ -309,11 +339,10 @@ impl App {
 }
 
 fn matches_query(query: &str, fields: &[Option<&str>]) -> bool {
-    query.is_empty()
-        || fields
-            .iter()
-            .flatten()
-            .any(|field| field.to_lowercase().contains(query))
+    fields
+        .iter()
+        .flatten()
+        .any(|field| field.to_lowercase().contains(query))
 }
 
 #[derive(Default)]
@@ -361,13 +390,6 @@ pub struct HttpCache {
 }
 
 impl HttpCache {
-    fn lengths(&self) -> (usize, usize) {
-        (
-            self.workers.data.as_ref().map_or(0, Vec::len),
-            self.history.data.as_ref().map_or(0, Vec::len),
-        )
-    }
-
     fn last_job_at(&self) -> Option<u64> {
         self.stats.data.as_ref().and_then(|s| s.last_job_at)
     }
@@ -479,25 +501,21 @@ fn make_headers(worker_key: Option<&str>, password: Option<&str>) -> HeaderMap {
 
 pub async fn fetch_update(
     client: &Client,
-    tab: Tab,
     worker_key: Option<&str>,
     password: Option<&str>,
     cache: &mut HttpCache,
 ) -> RefreshData {
     let start = Instant::now();
-    let previous_lengths = cache.lengths();
     let previous_last_job = cache.last_job_at();
     let headers = make_headers(worker_key, password);
 
     let mut unauthorized = cache.stats.refresh(client, &headers, "/print/stats").await;
     let history_stale = cache.history_is_stale(previous_last_job);
-    if tab != Tab::History {
-        unauthorized |= cache
-            .workers
-            .refresh(client, &headers, "/print/active")
-            .await;
-    }
-    if tab != Tab::Workers && history_stale {
+    unauthorized |= cache
+        .workers
+        .refresh(client, &headers, "/print/active")
+        .await;
+    if history_stale {
         unauthorized |= cache.refresh_history(client, &headers).await;
     }
 
@@ -506,12 +524,11 @@ pub async fn fetch_update(
     } else {
         (cache.workers.data.clone(), cache.history.data.clone())
     };
-    let has_new_data = cache.lengths() != previous_lengths;
 
     RefreshData {
         is_unauthorized: unauthorized,
         latency_ms: Some(u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)),
-        ..RefreshData::new(cache.stats.data.clone(), workers, history, has_new_data)
+        ..RefreshData::new(cache.stats.data.clone(), workers, history)
     }
 }
 
@@ -544,7 +561,7 @@ async fn handle_event(
             let init: SseInit = serde_json::from_str(&data).ok()?;
             cache.stats.data.clone_from(&init.stats);
             cache.workers.data.clone_from(&init.workers);
-            Some(RefreshData::new(init.stats, init.workers, None, true))
+            Some(RefreshData::new(init.stats, init.workers, None))
         }
         "stats" => {
             let stats: PrintStats = serde_json::from_str(&data).ok()?;
@@ -556,12 +573,12 @@ async fn handle_event(
             } else {
                 None
             };
-            Some(RefreshData::new(Some(stats), None, history, has_new_job))
+            Some(RefreshData::new(Some(stats), None, history))
         }
         "workers" => {
             let workers: Vec<WorkerInfo> = serde_json::from_str(&data).ok()?;
             cache.workers.data = Some(workers.clone());
-            Some(RefreshData::new(None, Some(workers), None, true))
+            Some(RefreshData::new(None, Some(workers), None))
         }
         "job_queued" | "job_claimed" => {
             cache.refresh_history(client, headers).await;
@@ -569,7 +586,6 @@ async fn handle_event(
                 cache.stats.data.clone(),
                 None,
                 cache.history.data.clone(),
-                true,
             ))
         }
         _ => None,

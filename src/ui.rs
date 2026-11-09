@@ -1,14 +1,14 @@
 use chrono::{DateTime, Local};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Clear, Paragraph, Row, Table, TableState},
+    widgets::{Block, BorderType, Clear, Paragraph, Row, Table},
 };
 
 use crate::{
-    app::{App, Tab},
+    app::{App, List, Tab, View},
     types::{HistoryEntry, WorkerInfo},
 };
 
@@ -25,8 +25,19 @@ const ACTIVE_PILL: Style = Style::new()
 const SELECTED_ROW: Style = Style::new()
     .bg(Color::Rgb(35, 35, 40))
     .add_modifier(Modifier::BOLD);
-const FLASH_ROW: Style = Style::new().bg(Color::Rgb(25, 45, 30));
 const SEPARATOR: &str = "  •  ";
+const NARROW_SEPARATOR: &str = " • ";
+const FOOTER_HINTS: [(&str, &str); 7] = [
+    ("tab", "switch"),
+    ("j/k", "move"),
+    ("/", "search"),
+    ("e", "auth"),
+    ("x", "clear"),
+    ("r", "refresh"),
+    ("q", "quit"),
+];
+const NARROW_FOOTER_HINTS: [(&str, &str); 3] = [("tab", "switch"), ("e", "auth"), ("q", "quit")];
+const TABLE_CHROME_ROWS: u16 = 3;
 
 struct Column<T> {
     min_width: u16,
@@ -48,11 +59,11 @@ fn fmt_bytes(b: u64) -> String {
 fn fmt_dur(s: u64) -> String {
     let (d, h, m, sec) = (s / 86400, (s % 86400) / 3600, (s % 3600) / 60, s % 60);
     if d > 0 {
-        format!("{d}d {h}h {m}m")
+        format!("{d}d {h:02}h {m:02}m")
     } else if h > 0 {
-        format!("{h}h {m}m {sec}s")
+        format!("{h}h {m:02}m {sec:02}s")
     } else if m > 0 {
-        format!("{m}m {sec}s")
+        format!("{m}m {sec:02}s")
     } else {
         format!("{sec}s")
     }
@@ -112,6 +123,27 @@ fn key_hints<'a>(hints: &[(&'a str, &'a str)], separator: &str) -> Vec<Span<'a>>
     spans
 }
 
+fn hint_at<'a>(hints: &[(&'a str, &'a str)], separator: &str, x: u16) -> Option<&'a str> {
+    let mut start = 0;
+    for &(key, label) in hints {
+        let end = start + key.chars().count() + label.chars().count() + 1;
+        if (start..end).contains(&usize::from(x)) {
+            return Some(key);
+        }
+        start = end + separator.chars().count();
+    }
+    None
+}
+
+fn hints_width(hints: &[(&str, &str)], separator: &str) -> u16 {
+    let text: usize = hints
+        .iter()
+        .map(|(k, l)| k.chars().count() + l.chars().count() + 1)
+        .sum();
+    let gaps = separator.chars().count() * hints.len().saturating_sub(1);
+    u16::try_from(text + gaps).unwrap_or(u16::MAX)
+}
+
 fn badges<'a>(items: &[(&'a str, Color, &'a str)]) -> Line<'a> {
     let mut spans = Vec::with_capacity(items.len() * 2);
     for &(key, color, label) in items {
@@ -140,12 +172,75 @@ pub fn inspector_modal_area(area: Rect) -> Rect {
     centered(area, 72, 22, 4)
 }
 
+fn auth_hints(app: &App) -> [(&'static str, &'static str); 3] {
+    let toggle = if app.mask_credentials { "show" } else { "hide" };
+    [("enter", "save"), ("tab", toggle), ("esc", "cancel")]
+}
+
+fn auth_hint_row(modal: Rect) -> Rect {
+    Rect::new(modal.x + 1, modal.y + 4, modal.width.saturating_sub(2), 1)
+}
+
+pub fn auth_hint_at(app: &App, screen: Rect, pos: Position) -> Option<&'static str> {
+    let row = auth_hint_row(auth_modal_area(screen));
+    let hints = auth_hints(app);
+    let start = row.x + row.width.saturating_sub(hints_width(&hints, SEPARATOR)) / 2;
+    (pos.y == row.y)
+        .then(|| hint_at(&hints, SEPARATOR, pos.x.checked_sub(start)?))
+        .flatten()
+}
+
+fn footer_hints(width: u16) -> (&'static [(&'static str, &'static str)], &'static str) {
+    if width < 60 {
+        (&NARROW_FOOTER_HINTS, NARROW_SEPARATOR)
+    } else {
+        (&FOOTER_HINTS, SEPARATOR)
+    }
+}
+
+pub fn footer_key_at(app: &App, screen: Rect, x: u16) -> Option<&'static str> {
+    if app.auth_mode || app.search_mode {
+        return None;
+    }
+    let (hints, separator) = footer_hints(screen.width);
+    hint_at(hints, separator, x)
+}
+
+pub fn tab_at(app: &App, x: u16) -> Option<Tab> {
+    let mut start = 0;
+    for (tab, title) in tab_titles(app) {
+        let end = start + title.chars().count();
+        if (start..end).contains(&usize::from(x)) {
+            return Some(tab);
+        }
+        start = end + 1;
+    }
+    None
+}
+
+pub fn list_row_at(app: &App, pos: Position) -> Option<(List, usize)> {
+    [List::Workers, List::History].into_iter().find_map(|list| {
+        let view = app.view(list).get();
+        let row = pos.y.checked_sub(view.area.y + TABLE_CHROME_ROWS)?;
+        (view.area.contains(pos) && row < view.area.height.saturating_sub(TABLE_CHROME_ROWS + 1))
+            .then_some((list, view.offset + usize::from(row)))
+    })
+}
+
 pub fn render_ui(app: &App, frame: &mut Frame) {
     let area = frame.area();
     if area.width < 25 || area.height < 6 {
         let msg = format!("Resize window ({}x{})", area.width, area.height);
         frame.render_widget(Paragraph::new(msg).style(WHITE), area);
         return;
+    }
+
+    for list in [List::Workers, List::History] {
+        let offset = app.view(list).get().offset;
+        app.view(list).set(View {
+            area: Rect::default(),
+            offset,
+        });
     }
 
     let compact = area.height < 18;
@@ -179,9 +274,9 @@ fn tab_title(name: &str, has_data: bool, count: usize) -> String {
     }
 }
 
-fn render_header(app: &App, frame: &mut Frame, area: Rect, compact: bool) {
+fn tab_titles(app: &App) -> [(Tab, String); 3] {
     let stats = app.stats.as_ref();
-    let tabs = [
+    [
         (
             Tab::Workers,
             tab_title(
@@ -203,7 +298,12 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect, compact: bool) {
             ),
         ),
         (Tab::Search, " Search ".to_string()),
-    ];
+    ]
+}
+
+fn render_header(app: &App, frame: &mut Frame, area: Rect, compact: bool) {
+    let stats = app.stats.as_ref();
+    let tabs = tab_titles(app);
 
     let mut left = Vec::new();
     for (i, (tab, title)) in tabs.into_iter().enumerate() {
@@ -244,7 +344,7 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect, compact: bool) {
             if let Some(latency) = app.latency_ms
                 && area.width >= 75
             {
-                spans.push(Span::styled(format!("{SEPARATOR}{latency}ms"), DIM));
+                spans.push(Span::styled(format!("{SEPARATOR}{latency:>4}ms"), DIM));
             }
             if area.width >= 90 {
                 let uptime = app.realtime_uptime().map_or_else(|| "-".into(), fmt_dur);
@@ -296,26 +396,13 @@ fn render_footer(app: &App, frame: &mut Frame, area: Rect) {
             (" esc ", Color::White, " exit  "),
             (" enter ", Color::White, " confirm"),
         ])
-    } else if area.width < 60 {
-        Line::from(key_hints(
-            &[("tab", "switch"), ("e", "auth"), ("q", "quit")],
-            " • ",
-        ))
     } else {
-        let mut spans = key_hints(
-            &[
-                ("tab", "switch"),
-                ("j/k", "move"),
-                ("/", "search"),
-                ("e", "auth"),
-                ("x", "clear"),
-                ("r", "refresh"),
-                ("q", "quit"),
-            ],
-            SEPARATOR,
-        );
-        spans.push(Span::raw("    "));
-        spans.push(status_span(app));
+        let (hints, separator) = footer_hints(area.width);
+        let mut spans = key_hints(hints, separator);
+        if area.width >= 60 {
+            spans.push(Span::raw("    "));
+            spans.push(status_span(app));
+        }
         Line::from(spans)
     };
     frame.render_widget(Paragraph::new(line), area);
@@ -326,9 +413,7 @@ fn render_auth_modal(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(Clear, modal);
     frame.render_widget(panel(" Password ", WHITE), modal);
 
-    let [input_area, hint_area] = Layout::vertical([Constraint::Length(3), Constraint::Length(1)])
-        .margin(1)
-        .areas(modal);
+    let input_area = Rect::new(modal.x + 1, modal.y + 1, modal.width.saturating_sub(2), 3);
 
     let value = if app.mask_credentials {
         "•".repeat(app.input_password.len())
@@ -348,14 +433,10 @@ fn render_auth_modal(app: &App, frame: &mut Frame, area: Rect) {
     .block(panel(" Password ", WHITE));
     frame.render_widget(input, input_area);
 
-    let toggle = if app.mask_credentials { "show" } else { "hide" };
-    let hint = key_hints(
-        &[("enter", "save"), ("tab", toggle), ("esc", "cancel")],
-        SEPARATOR,
-    );
+    let hint = key_hints(&auth_hints(app), SEPARATOR);
     frame.render_widget(
         Paragraph::new(Line::from(hint)).alignment(Alignment::Center),
-        hint_area,
+        auth_hint_row(modal),
     );
 }
 
@@ -387,17 +468,29 @@ fn render_empty(frame: &mut Frame, area: Rect, title: &str, message: &str) {
     );
 }
 
+fn scrolled_offset(previous: usize, selected: usize, rows: usize, len: usize) -> usize {
+    let offset = previous.min(len.saturating_sub(rows));
+    if selected < offset {
+        selected
+    } else if rows > 0 && selected >= offset + rows {
+        selected + 1 - rows
+    } else {
+        offset
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_table<T>(
     app: &App,
     frame: &mut Frame,
     area: Rect,
     title: &str,
+    list: List,
     items: &[&T],
-    selected: usize,
     columns: &[Column<T>],
     details: fn(&T) -> Vec<Detail<'_>>,
 ) {
+    let selected = app.selected(list);
     let visible: Vec<&Column<T>> = columns
         .iter()
         .filter(|c| area.width >= c.min_width)
@@ -409,6 +502,13 @@ fn render_table<T>(
     ])
     .areas(area);
 
+    let rows = usize::from(table_area.height.saturating_sub(TABLE_CHROME_ROWS + 1));
+    let offset = scrolled_offset(app.view(list).get().offset, selected, rows, items.len());
+    app.view(list).set(View {
+        area: table_area,
+        offset,
+    });
+
     let header = Row::new(
         std::iter::once("")
             .chain(visible.iter().map(|c| c.title))
@@ -416,35 +516,28 @@ fn render_table<T>(
     )
     .bottom_margin(1);
     let widths = std::iter::once(Constraint::Length(2)).chain(visible.iter().map(|c| c.width));
-
-    let flashing = app
-        .flash_highlight
-        .is_some_and(|t| t.elapsed().as_millis() < 600);
-    let rows = items.iter().copied().enumerate().map(|(index, item)| {
+    let window = items.iter().copied().enumerate().skip(offset).take(rows);
+    let table_rows = window.map(|(index, item)| {
         let is_selected = index == selected;
-        let style = if is_selected {
-            SELECTED_ROW
-        } else if flashing && index == 0 {
-            FLASH_ROW
-        } else {
-            Style::new()
-        };
         let indicator = if is_selected {
             Span::styled("❯", WHITE)
         } else {
             Span::styled(" ", DIM)
         };
-        Row::new(std::iter::once(indicator).chain(visible.iter().map(|c| (c.cell)(item))))
-            .style(style)
+        Row::new(std::iter::once(indicator).chain(visible.iter().map(|c| (c.cell)(item)))).style(
+            if is_selected {
+                SELECTED_ROW
+            } else {
+                Style::new()
+            },
+        )
     });
 
-    let mut state = TableState::default().with_selected(Some(selected));
-    frame.render_stateful_widget(
-        Table::new(rows, widths)
+    frame.render_widget(
+        Table::new(table_rows, widths)
             .header(header)
             .block(panel(title, DIM)),
         table_area,
-        &mut state,
     );
 
     if let Some(item) = items.get(selected).filter(|_| show_details) {
@@ -666,8 +759,8 @@ fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
             frame,
             area,
             " Workers ",
+            List::Workers,
             &items,
-            app.selected_worker,
             &worker_columns(),
             worker_details,
         );
@@ -685,8 +778,8 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
             frame,
             area,
             " History ",
+            List::History,
             &items,
-            app.selected_history,
             &history_columns(),
             history_details,
         );
@@ -719,8 +812,8 @@ fn render_search(app: &App, frame: &mut Frame, area: Rect) {
 }
 
 fn inspected_item(app: &App) -> (String, String) {
-    match app.tab {
-        Tab::Workers => app.filtered_workers().get(app.selected_worker).map_or_else(
+    match app.inspecting {
+        List::Workers => app.filtered_workers().get(app.selected_worker).map_or_else(
             || (" Worker ".to_string(), "{}".to_string()),
             |w| {
                 (
@@ -729,7 +822,7 @@ fn inspected_item(app: &App) -> (String, String) {
                 )
             },
         ),
-        Tab::History | Tab::Search => app
+        List::History => app
             .filtered_history()
             .get(app.selected_history)
             .map_or_else(

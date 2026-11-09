@@ -21,8 +21,11 @@ use std::{io, time::Duration};
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 use crate::{
-    app::{App, HttpCache, RefreshData, Tab, fetch_update, read_events},
-    ui::{auth_modal_area, inspector_max_scroll, inspector_modal_area, render_ui},
+    app::{App, HttpCache, List, RefreshData, Tab, fetch_update, read_events},
+    ui::{
+        auth_hint_at, auth_modal_area, footer_key_at, inspector_max_scroll, inspector_modal_area,
+        list_row_at, render_ui, tab_at,
+    },
 };
 
 const REFRESH_INTERVAL_SECS: u64 = 10;
@@ -37,7 +40,6 @@ FLAGS:
     -v, --version    Print version information";
 
 struct FetchReq {
-    tab: Tab,
     worker_key: Option<String>,
     password: Option<String>,
     auto_refresh: bool,
@@ -46,7 +48,6 @@ struct FetchReq {
 impl FetchReq {
     fn from_app(app: &App) -> Self {
         Self {
-            tab: app.tab,
             worker_key: app.worker_key.clone(),
             password: app.password.clone(),
             auto_refresh: app.auto_refresh,
@@ -60,14 +61,10 @@ fn request(app: &App, tx: &Requests) {
     let _ = tx.send(FetchReq::from_app(app));
 }
 
-fn refresh(app: &mut App, tx: &Requests) {
-    app.is_loading = true;
-    request(app, tx);
-}
-
 fn reload(app: &mut App, tx: &Requests) {
     app.set_toast("Refreshed");
-    refresh(app, tx);
+    app.is_loading = true;
+    request(app, tx);
 }
 
 fn save_auth(app: &mut App, tx: &Requests) {
@@ -86,15 +83,13 @@ fn toggle_auto_refresh(app: &mut App, tx: &Requests) {
     request(app, tx);
 }
 
-fn select_tab(app: &mut App, tab: Tab, tx: &Requests) {
+fn select_tab(app: &mut App, tab: Tab) {
     app.search_mode = tab == Tab::Search;
-    if app.tab != tab {
-        app.tab = tab;
-        refresh(app, tx);
-    }
+    app.tab = tab;
 }
 
-fn open_inspector(app: &mut App) {
+fn open_inspector(app: &mut App, list: List) {
+    app.inspecting = list;
     app.inspector_mode = true;
     app.inspector_scroll = 0;
 }
@@ -105,7 +100,7 @@ fn handle_key(app: &mut App, key: KeyEvent, tx: &Requests) {
     } else if app.inspector_mode {
         handle_inspector_key(app, key.code);
     } else if app.search_mode {
-        handle_search_key(app, key.code, tx);
+        handle_search_key(app, key.code);
     } else {
         handle_normal_key(app, key, tx);
     }
@@ -132,25 +127,25 @@ fn handle_inspector_key(app: &mut App, code: KeyCode) {
             app.inspector_scroll = app.inspector_scroll.saturating_sub(1);
         }
         KeyCode::Right | KeyCode::Char('l') => {
-            app.next_item();
+            app.step(app.inspecting, true);
             app.inspector_scroll = 0;
         }
         KeyCode::Left | KeyCode::Char('h') => {
-            app.prev_item();
+            app.step(app.inspecting, false);
             app.inspector_scroll = 0;
         }
         _ => {}
     }
 }
 
-fn handle_search_key(app: &mut App, code: KeyCode, tx: &Requests) {
+fn handle_search_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc => app.search_mode = false,
-        KeyCode::Enter => open_inspector(app),
-        KeyCode::Tab => select_tab(app, app.tab.next(), tx),
-        KeyCode::BackTab => select_tab(app, app.tab.prev(), tx),
-        KeyCode::Down => app.next_item(),
-        KeyCode::Up => app.prev_item(),
+        KeyCode::Enter => open_inspector(app, app.tab.list()),
+        KeyCode::Tab => select_tab(app, app.tab.next()),
+        KeyCode::BackTab => select_tab(app, app.tab.prev()),
+        KeyCode::Down => app.step(app.tab.list(), true),
+        KeyCode::Up => app.step(app.tab.list(), false),
         KeyCode::Backspace => {
             app.search_query.pop();
             app.reset_selection();
@@ -169,16 +164,16 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, tx: &Requests) {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
         }
-        KeyCode::Char('1') => select_tab(app, Tab::Workers, tx),
-        KeyCode::Char('2') => select_tab(app, Tab::History, tx),
-        KeyCode::Char('3') => select_tab(app, Tab::Search, tx),
-        KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => select_tab(app, app.tab.next(), tx),
+        KeyCode::Char('1') => select_tab(app, Tab::Workers),
+        KeyCode::Char('2') => select_tab(app, Tab::History),
+        KeyCode::Char('3') => select_tab(app, Tab::Search),
+        KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => select_tab(app, app.tab.next()),
         KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
-            select_tab(app, app.tab.prev(), tx);
+            select_tab(app, app.tab.prev());
         }
-        KeyCode::Enter | KeyCode::Char(' ' | 'v') => open_inspector(app),
-        KeyCode::Down | KeyCode::Char('j') => app.next_item(),
-        KeyCode::Up | KeyCode::Char('k') => app.prev_item(),
+        KeyCode::Enter | KeyCode::Char(' ' | 'v') => open_inspector(app, app.tab.list()),
+        KeyCode::Down | KeyCode::Char('j') => app.step(app.tab.list(), true),
+        KeyCode::Up | KeyCode::Char('k') => app.step(app.tab.list(), false),
         KeyCode::Char('/') => app.search_mode = true,
         KeyCode::Char('e' | 'c') => app.open_auth_modal(),
         KeyCode::Char('x') => clear_auth(app, tx),
@@ -190,64 +185,36 @@ fn handle_normal_key(app: &mut App, key: KeyEvent, tx: &Requests) {
 
 fn handle_click(app: &mut App, pos: Position, screen: Rect, tx: &Requests) {
     if app.auth_mode {
-        click_auth_modal(app, pos, auth_modal_area(screen), tx);
+        match auth_hint_at(app, screen, pos) {
+            Some("enter") => save_auth(app, tx),
+            Some("tab") => app.mask_credentials = !app.mask_credentials,
+            Some("esc") => app.auth_mode = false,
+            _ if !auth_modal_area(screen).contains(pos) => app.auth_mode = false,
+            _ => {}
+        }
     } else if app.inspector_mode {
         let modal = inspector_modal_area(screen);
         if !modal.contains(pos) || pos.y == modal.y + modal.height.saturating_sub(2) {
             app.inspector_mode = false;
         }
-    } else if pos.y <= 1 {
-        click_tab_bar(app, pos.x, tx);
-    } else if pos.y == screen.height.saturating_sub(1) {
-        click_footer(app, pos.x, tx);
-    } else {
-        let table_start = if screen.height < 18 { 3 } else { 4 };
-        if let Some(index) = pos.y.checked_sub(table_start)
-            && app.select(usize::from(index))
-        {
-            open_inspector(app);
+    } else if pos.y == 0 {
+        if let Some(tab) = tab_at(app, pos.x) {
+            select_tab(app, tab);
         }
-    }
-}
-
-fn click_auth_modal(app: &mut App, pos: Position, modal: Rect, tx: &Requests) {
-    if !modal.contains(pos) {
-        app.auth_mode = false;
-    } else if pos.y == modal.y + modal.height.saturating_sub(2) {
-        match pos.x - modal.x {
-            6..=16 => save_auth(app, tx),
-            17..=28 => app.mask_credentials = !app.mask_credentials,
-            29..=42 => app.auth_mode = false,
+    } else if pos.y == screen.height.saturating_sub(1) {
+        match footer_key_at(app, screen, pos.x) {
+            Some("tab") => select_tab(app, app.tab.next()),
+            Some("/") => app.search_mode = true,
+            Some("e") => app.open_auth_modal(),
+            Some("x") => clear_auth(app, tx),
+            Some("r") => reload(app, tx),
+            Some("q") => app.should_quit = true,
             _ => {}
         }
-    }
-}
-
-fn click_tab_bar(app: &mut App, x: u16, tx: &Requests) {
-    let pill_width = |empty: bool| if empty { 11 } else { 16 };
-    let workers_end = pill_width(app.workers.is_empty());
-    let history_end = workers_end + pill_width(app.history.is_empty());
-    let tab = if x < workers_end {
-        Tab::Workers
-    } else if x < history_end {
-        Tab::History
-    } else if x < history_end + 10 {
-        Tab::Search
-    } else {
-        return;
-    };
-    select_tab(app, tab, tx);
-}
-
-fn click_footer(app: &mut App, x: u16, tx: &Requests) {
-    match x {
-        0..14 => select_tab(app, app.tab.next(), tx),
-        20..=30 => app.search_mode = true,
-        32..=42 => app.open_auth_modal(),
-        44..=54 => clear_auth(app, tx),
-        56..=68 => reload(app, tx),
-        70..=80 => app.should_quit = true,
-        _ => {}
+    } else if let Some((list, index)) = list_row_at(app, pos)
+        && app.select(list, index)
+    {
+        open_inspector(app, list);
     }
 }
 
@@ -288,7 +255,6 @@ fn spawn_fetcher(initial: FetchReq, tx_data: UnboundedSender<RefreshData>) -> Re
             if fetch_now {
                 let data = fetch_update(
                     &client,
-                    last.tab,
                     last.worker_key.as_deref(),
                     last.password.as_deref(),
                     &mut cache,
