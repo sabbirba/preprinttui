@@ -2,6 +2,10 @@
 
 Active since `0.1.0`.
 
+### 0.1.14
+
+- Restored the previous table column widths and spacing.
+
 ### 0.1.13
 
 - Removed the summary line under the tabs.

@@ -97,7 +97,7 @@ fn open_inspector(app: &mut App, list: List) {
 fn navigate(app: &mut App, code: KeyCode) {
     let list = app.tab.list();
     let page =
-        isize::try_from(app.view(list).get().area.height.saturating_sub(3).max(1)).unwrap_or(1);
+        isize::try_from(app.view(list).get().area.height.saturating_sub(4).max(1)).unwrap_or(1);
     match code {
         KeyCode::Down => app.move_by(list, 1),
         KeyCode::Up => app.move_by(list, -1),

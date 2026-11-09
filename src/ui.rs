@@ -39,11 +39,12 @@ const FOOTER_HINTS: [(&str, &str); 7] = [
     ("q", "quit"),
 ];
 const NARROW_FOOTER_HINTS: [(&str, &str); 3] = [("tab", "switch"), ("e", "auth"), ("q", "quit")];
-const TABLE_CHROME_ROWS: u16 = 2;
+const TABLE_CHROME_ROWS: u16 = 3;
 
 struct Column<T> {
     min_width: u16,
     title: &'static str,
+    width: Constraint,
     cell: fn(&T) -> Span<'_>,
 }
 
@@ -525,36 +526,24 @@ fn render_table<T>(
         std::iter::once("")
             .chain(visible.iter().map(|c| c.title))
             .map(|title| Span::styled(title, BOLD)),
-    );
-    let window: Vec<(usize, Vec<Span>)> = items
-        .iter()
-        .copied()
-        .enumerate()
-        .skip(offset)
-        .take(rows)
-        .map(|(index, item)| (index, visible.iter().map(|c| (c.cell)(item)).collect()))
-        .collect();
-    let widths: Vec<Constraint> = std::iter::once(Constraint::Length(2))
-        .chain(visible.iter().enumerate().map(|(column, c)| {
-            let widest = window
-                .iter()
-                .map(|(_, cells)| cells[column].width())
-                .fold(c.title.len(), usize::max);
-            Constraint::Length(u16::try_from(widest).unwrap_or(u16::MAX))
-        }))
-        .collect::<Vec<_>>();
-    let table_rows = window.into_iter().map(|(index, cells)| {
+    )
+    .bottom_margin(1);
+    let widths = std::iter::once(Constraint::Length(2)).chain(visible.iter().map(|c| c.width));
+    let window = items.iter().copied().enumerate().skip(offset).take(rows);
+    let table_rows = window.map(|(index, item)| {
         let is_selected = index == selected;
         let indicator = if is_selected {
             Span::styled("❯", WHITE)
         } else {
             Span::styled(" ", DIM)
         };
-        Row::new(std::iter::once(indicator).chain(cells)).style(if is_selected {
-            SELECTED_ROW
-        } else {
-            Style::new()
-        })
+        Row::new(std::iter::once(indicator).chain(visible.iter().map(|c| (c.cell)(item)))).style(
+            if is_selected {
+                SELECTED_ROW
+            } else {
+                Style::new()
+            },
+        )
     });
 
     frame.render_widget(
@@ -614,41 +603,49 @@ fn worker_columns() -> [Column<WorkerInfo>; 8] {
         Column {
             min_width: 0,
             title: "IDENT",
+            width: Constraint::Fill(22),
             cell: |w| Span::styled(or_dash(w.id.as_deref()), WHITE),
         },
         Column {
             min_width: 55,
             title: "IP",
+            width: Constraint::Fill(18),
             cell: |w| Span::styled(or_dash(w.ip.as_deref()), WHITE),
         },
         Column {
             min_width: 90,
             title: "AGENT",
+            width: Constraint::Fill(22),
             cell: |w| Span::styled(or_dash(w.user_agent.as_deref()), DIM),
         },
         Column {
             min_width: 90,
             title: "CHECKED",
+            width: Constraint::Fill(10),
             cell: |w| Span::styled(worker_last_check(w), DIM),
         },
         Column {
             min_width: 0,
             title: "JOBS",
+            width: Constraint::Fill(10),
             cell: |w| Span::styled(w.jobs_completed.unwrap_or(0).to_string(), LIGHT_GREEN),
         },
         Column {
             min_width: 55,
             title: "CONNS",
+            width: Constraint::Fill(8),
             cell: |w| Span::styled(w.connections.unwrap_or(1).to_string(), WHITE),
         },
         Column {
             min_width: 90,
             title: "UPTIME",
+            width: Constraint::Fill(10),
             cell: |w| Span::styled(worker_uptime(w), DIM),
         },
         Column {
             min_width: 0,
             title: "STATUS",
+            width: Constraint::Fill(10),
             cell: worker_status,
         },
     ]
@@ -700,31 +697,37 @@ fn history_columns() -> [Column<HistoryEntry>; 6] {
         Column {
             min_width: 0,
             title: "ID",
+            width: Constraint::Length(8),
             cell: |h| Span::styled(h.display_id(), WHITE),
         },
         Column {
             min_width: 0,
             title: "STUDENT",
+            width: Constraint::Fill(24),
             cell: |h| Span::styled(or_dash(h.student.as_deref()), LIGHT_GREEN),
         },
         Column {
             min_width: 90,
             title: "IP",
+            width: Constraint::Fill(24),
             cell: |h| Span::styled(or_dash(h.client_ip.as_deref()), DIM),
         },
         Column {
             min_width: 60,
             title: "SIZE",
+            width: Constraint::Fill(14),
             cell: |h| Span::styled(fmt_bytes(h.size_bytes.unwrap_or(0)), WHITE),
         },
         Column {
             min_width: 0,
             title: "STATUS",
+            width: Constraint::Fill(14),
             cell: history_status,
         },
         Column {
             min_width: 60,
             title: "TIME",
+            width: Constraint::Fill(24),
             cell: |h| Span::styled(fmt_ts(h.timestamp.unwrap_or(0)), DIM),
         },
     ]
