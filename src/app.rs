@@ -12,7 +12,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::{cell::Cell, collections::HashMap, net::IpAddr, path::PathBuf, time::Instant};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::types::{HistoryEntry, IpInfo, PrintStats, SseInit, Student, StudentFile, WorkerInfo};
+use crate::types::{HistoryEntry, IpInfo, PrintStats, SseInit, WorkerInfo};
 
 const DEFAULT_URL: &str = "https://api.preconnect.app";
 const KEYRING_SERVICE: &str = "preprinttui";
@@ -144,7 +144,6 @@ pub struct App {
     pub inspecting: List,
     pub views: [Cell<View>; 3],
     pub ip_lookups: HashMap<String, Option<Result<IpInfo, String>>>,
-    pub students: HashMap<String, Student>,
 }
 
 impl App {
@@ -153,7 +152,6 @@ impl App {
         Self {
             worker_key,
             password,
-            students: load_students(),
             mask_credentials: true,
             status_msg: "Connecting...".to_string(),
             auto_refresh: true,
@@ -328,20 +326,6 @@ impl App {
             List::History => self.filtered_history().get(index)?.client_ip.clone(),
         }?;
         ip.parse::<IpAddr>().is_ok().then_some(ip)
-    }
-
-    pub fn student(&self, id: Option<&str>) -> Option<&Student> {
-        self.students.get(id?.trim())
-    }
-
-    pub fn inspected_student(&self) -> Option<&Student> {
-        let index = self.selected[self.inspecting as usize];
-        let id = match self.inspecting {
-            List::Workers => return None,
-            List::Queue => self.filtered_queue().get(index)?.student.clone(),
-            List::History => self.filtered_history().get(index)?.student.clone(),
-        };
-        self.student(id.as_deref())
     }
 
     pub fn inspected_ip(&self) -> Option<String> {
@@ -521,22 +505,6 @@ fn config_dir() -> PathBuf {
 
 fn legacy_creds_path() -> PathBuf {
     config_dir().join("creds.json")
-}
-
-fn load_students() -> HashMap<String, Student> {
-    let path = std::env::var_os("PREPRINTTUI_STUDENTS")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| config_dir().join("students.json"));
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|data| serde_json::from_str::<StudentFile>(&data).ok())
-        .map(|file| {
-            file.students
-                .into_iter()
-                .map(|student| (student.id.trim().to_string(), student))
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn non_blank(value: Option<String>) -> Option<String> {

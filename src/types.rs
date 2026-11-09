@@ -71,21 +71,6 @@ pub struct SseInit {
     pub workers: Option<Vec<WorkerInfo>>,
 }
 
-#[derive(Clone, Deserialize)]
-pub struct Student {
-    #[serde(rename = "Student_ID")]
-    pub id: String,
-    #[serde(rename = "Name")]
-    pub name: String,
-    #[serde(rename = "Dept")]
-    pub dept: String,
-}
-
-#[derive(Deserialize)]
-pub struct StudentFile {
-    pub students: Vec<Student>,
-}
-
 #[derive(Clone, Deserialize, Default)]
 pub struct IpInfo {
     #[serde(default)]

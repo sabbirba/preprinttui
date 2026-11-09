@@ -2,6 +2,10 @@
 
 Active since `0.1.0`.
 
+### 0.1.16
+
+- Removed the local student list. Jobs show student IDs only and no student data is kept on disk.
+
 ### 0.1.15
 
 - Fixed a reconnect loop that flooded the API with event stream requests whenever it answered with an error such as 429 or 401. Retries now back off from 0.5 seconds up to 30 seconds.

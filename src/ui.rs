@@ -497,7 +497,7 @@ fn render_table<T>(
     list: List,
     items: &[&T],
     columns: &[Column<T>],
-    details: for<'a> fn(&'a App, &'a T) -> Vec<Detail<'a>>,
+    details: fn(&T) -> Vec<Detail<'_>>,
 ) {
     let selected = app.selected[list as usize];
     let visible: Vec<&Column<T>> = columns
@@ -551,7 +551,7 @@ fn render_table<T>(
 
     if let Some(item) = items.get(selected).filter(|_| show_details) {
         let mut spans = Vec::new();
-        for (min_width, label, value) in details(app, item) {
+        for (min_width, label, value) in details(item) {
             if area.width >= min_width {
                 let lead = if spans.is_empty() { "" } else { SEPARATOR };
                 spans.push(Span::styled(format!("{lead}{label}: "), DIM));
@@ -647,7 +647,7 @@ fn worker_columns() -> [Column<WorkerInfo>; 8] {
     ]
 }
 
-fn worker_details<'a>(_app: &'a App, w: &'a WorkerInfo) -> Vec<Detail<'a>> {
+fn worker_details(w: &WorkerInfo) -> Vec<Detail<'_>> {
     vec![
         (
             0,
@@ -729,14 +729,14 @@ fn history_columns() -> [Column<HistoryEntry>; 6] {
     ]
 }
 
-fn history_details<'a>(app: &'a App, h: &'a HistoryEntry) -> Vec<Detail<'a>> {
-    let student = match app.student(h.student.as_deref()) {
-        Some(s) => format!("{} · {} ({})", s.id, s.name, s.dept),
-        None => or_dash(h.student.as_deref()).to_string(),
-    };
+fn history_details(h: &HistoryEntry) -> Vec<Detail<'_>> {
     vec![
         (0, "ID", Span::styled(h.display_id(), WHITE)),
-        (0, "Student", Span::styled(student, LIGHT_GREEN)),
+        (
+            0,
+            "Student",
+            Span::styled(or_dash(h.student.as_deref()), LIGHT_GREEN),
+        ),
         (
             0,
             "Status",
@@ -951,16 +951,7 @@ fn ip_info_rows(ip: &str, info: &IpInfo) -> Vec<[Field; 2]> {
 }
 
 fn summary_lines(app: &App) -> Vec<Line<'static>> {
-    let mut rows: Vec<[Field; 2]> = app
-        .inspected_student()
-        .map(|s| {
-            [
-                ("Name", Some(s.name.clone())),
-                ("Dept", Some(s.dept.clone())),
-            ]
-        })
-        .into_iter()
-        .collect();
+    let mut rows: Vec<[Field; 2]> = Vec::new();
     let mut padding = 0;
     if let Some(ip) = app.inspected_ip() {
         match app.ip_lookups.get(&ip) {
