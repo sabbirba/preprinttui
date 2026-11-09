@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Deserialize, Serialize, Default, PartialEq)]
+#[derive(Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub struct PrintStats {
@@ -49,19 +49,15 @@ pub struct HistoryEntry {
 
 impl HistoryEntry {
     pub fn display_id(&self) -> String {
-        self.queue_id
-            .as_ref()
-            .or(self.id.as_ref())
-            .map(|v| match v {
-                serde_json::Value::Number(n) => n.to_string(),
-                serde_json::Value::String(s) => s.clone(),
-                _ => "-".to_string(),
-            })
-            .unwrap_or_else(|| "-".to_string())
+        match self.queue_id.as_ref().or(self.id.as_ref()) {
+            Some(serde_json::Value::Number(n)) => n.to_string(),
+            Some(serde_json::Value::String(s)) => s.clone(),
+            _ => "-".to_string(),
+        }
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SseInit {
     pub stats: Option<PrintStats>,

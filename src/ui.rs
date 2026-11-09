@@ -1,29 +1,52 @@
 use chrono::{DateTime, Local};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
+    widgets::{Block, BorderType, Clear, Paragraph, Row, Table, TableState},
 };
 
-use crate::app::{App, Tab};
+use crate::{
+    app::{App, Tab},
+    types::{HistoryEntry, WorkerInfo},
+};
 
-pub fn fmt_bytes(b: u64) -> String {
-    if b < 1024 {
-        format!("{b} B")
-    } else if b < 1048576 {
-        format!("{:.1} KB", b as f64 / 1024.0)
-    } else {
-        format!("{:.2} MB", b as f64 / 1048576.0)
+const WHITE: Style = Style::new().fg(Color::White);
+const BOLD: Style = WHITE.add_modifier(Modifier::BOLD);
+const DIM: Style = Style::new().fg(Color::DarkGray);
+const GRAY: Style = Style::new().fg(Color::Gray);
+const GREEN: Style = Style::new().fg(Color::Green);
+const LIGHT_GREEN: Style = Style::new().fg(Color::LightGreen);
+const ACTIVE_PILL: Style = Style::new()
+    .fg(Color::Black)
+    .bg(Color::White)
+    .add_modifier(Modifier::BOLD);
+const SELECTED_ROW: Style = Style::new()
+    .bg(Color::Rgb(35, 35, 40))
+    .add_modifier(Modifier::BOLD);
+const FLASH_ROW: Style = Style::new().bg(Color::Rgb(25, 45, 30));
+const SEPARATOR: &str = "  •  ";
+
+struct Column<T> {
+    min_width: u16,
+    title: &'static str,
+    width: Constraint,
+    cell: fn(&T) -> Span<'_>,
+}
+
+type Detail<'a> = (u16, &'static str, Span<'a>);
+
+fn fmt_bytes(b: u64) -> String {
+    match b {
+        0..1024 => format!("{b} B"),
+        1024..1_048_576 => format!("{:.1} KB", b as f64 / 1024.0),
+        _ => format!("{:.2} MB", b as f64 / 1_048_576.0),
     }
 }
 
-pub fn fmt_dur(s: u64) -> String {
-    let d = s / 86400;
-    let h = (s % 86400) / 3600;
-    let m = (s % 3600) / 60;
-    let sec = s % 60;
+fn fmt_dur(s: u64) -> String {
+    let (d, h, m, sec) = (s / 86400, (s % 86400) / 3600, (s % 3600) / 60, s % 60);
     if d > 0 {
         format!("{d}d {h}h {m}m")
     } else if h > 0 {
@@ -35,54 +58,95 @@ pub fn fmt_dur(s: u64) -> String {
     }
 }
 
-pub fn fmt_ts(ts: u64) -> String {
-    if ts == 0 {
-        return "-".to_string();
-    }
+fn fmt_ts(ts: u64) -> String {
     let ms = if ts < 10_000_000_000 { ts * 1000 } else { ts };
-    DateTime::from_timestamp_millis(ms as i64)
-        .map(|dt| {
-            DateTime::<Local>::from(dt)
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string()
-        })
-        .unwrap_or_else(|| "-".to_string())
+    i64::try_from(ms)
+        .ok()
+        .filter(|_| ts != 0)
+        .and_then(DateTime::from_timestamp_millis)
+        .map_or_else(
+            || "-".to_string(),
+            |dt| {
+                dt.with_timezone(&Local)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
+            },
+        )
+}
+
+fn or_dash(value: Option<&str>) -> &str {
+    value.unwrap_or("-")
+}
+
+fn panel<'a>(title: impl Into<Line<'a>>, border: Style) -> Block<'a> {
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(border)
+        .title(title)
+}
+
+fn key_hints<'a>(hints: &[(&'a str, &'a str)], separator: &str) -> Vec<Span<'a>> {
+    let last = hints.len().saturating_sub(1);
+    let mut spans = Vec::with_capacity(hints.len() * 2);
+    for (i, &(key, label)) in hints.iter().enumerate() {
+        let tail = if i == last { "" } else { separator };
+        spans.push(Span::styled(key, WHITE));
+        spans.push(Span::styled(format!(" {label}{tail}"), DIM));
+    }
+    spans
+}
+
+fn badges<'a>(items: &[(&'a str, Color, &'a str)]) -> Line<'a> {
+    let mut spans = Vec::with_capacity(items.len() * 2);
+    for &(key, color, label) in items {
+        spans.push(Span::styled(key, Style::new().fg(Color::Black).bg(color)));
+        spans.push(Span::styled(label, DIM));
+    }
+    Line::from(spans)
+}
+
+fn centered(area: Rect, width: u16, height: u16, margin: u16) -> Rect {
+    let width = width.min(area.width.saturating_sub(margin));
+    let height = height.min(area.height.saturating_sub(margin));
+    Rect::new(
+        (area.width - width) / 2,
+        (area.height - height) / 2,
+        width,
+        height,
+    )
+}
+
+pub fn auth_modal_area(area: Rect) -> Rect {
+    centered(area, 46, 7, 2)
+}
+
+pub fn inspector_modal_area(area: Rect) -> Rect {
+    centered(area, 72, 22, 4)
 }
 
 pub fn render_ui(app: &App, frame: &mut Frame) {
     let area = frame.area();
     if area.width < 25 || area.height < 6 {
-        let msg = Paragraph::new(format!(
-            "Resize window ({x}x{y})",
-            x = area.width,
-            y = area.height
-        ))
-        .style(Style::default().fg(Color::White));
-        frame.render_widget(msg, area);
+        let msg = format!("Resize window ({}x{})", area.width, area.height);
+        frame.render_widget(Paragraph::new(msg).style(WHITE), area);
         return;
     }
 
-    let is_compact = area.height < 18;
-    let header_height = if is_compact { 1 } else { 2 };
+    let compact = area.height < 18;
+    let [header, body, footer] = Layout::vertical([
+        Constraint::Length(if compact { 1 } else { 2 }),
+        Constraint::Min(4),
+        Constraint::Length(1),
+    ])
+    .areas(area);
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(header_height),
-            Constraint::Min(4),
-            Constraint::Length(1),
-        ])
-        .split(area);
-
-    render_header(app, frame, chunks[0], is_compact);
-
+    render_header(app, frame, header, compact);
     match app.tab {
-        Tab::Workers => render_workers(app, frame, chunks[1]),
-        Tab::History => render_history(app, frame, chunks[1]),
-        Tab::Search => render_search(app, frame, chunks[1]),
+        Tab::Workers => render_workers(app, frame, body),
+        Tab::History => render_history(app, frame, body),
+        Tab::Search => render_search(app, frame, body),
     }
-
-    render_footer(app, frame, chunks[2], area.width);
+    render_footer(app, frame, footer);
 
     if app.auth_mode {
         render_auth_modal(app, frame, area);
@@ -91,940 +155,597 @@ pub fn render_ui(app: &App, frame: &mut Frame) {
     }
 }
 
-fn render_header(app: &App, frame: &mut Frame, area: Rect, is_compact: bool) {
-    let stats = app.stats.as_ref();
-    let has_stats = stats.is_some();
-    let is_online = stats
-        .and_then(|s| s.status.as_deref())
-        .map(|s| s.eq_ignore_ascii_case("online"))
-        .unwrap_or(false);
-
-    let worker_count = stats
-        .and_then(|s| s.active_printers)
-        .unwrap_or(app.workers.len());
-    let uptime_str = app
-        .realtime_uptime()
-        .map(fmt_dur)
-        .unwrap_or_else(|| "-".to_string());
-    let history_count = stats
-        .and_then(|s| s.history_count)
-        .unwrap_or(app.history.len());
-
-    let w_title = if !has_stats && app.workers.is_empty() {
-        " Workers ".to_string()
+fn tab_title(name: &str, has_data: bool, count: usize) -> String {
+    if has_data {
+        format!(" {name} ({count}) ")
     } else {
-        format!(" Workers ({worker_count}) ")
-    };
-
-    let h_title = if !has_stats && app.history.is_empty() {
-        " History ".to_string()
-    } else {
-        format!(" History ({history_count}) ")
-    };
-
-    let s_title = " Search ".to_string();
-
-    let mut left_spans = Vec::new();
-
-    let pill_active = Style::default()
-        .fg(Color::Black)
-        .bg(Color::White)
-        .add_modifier(Modifier::BOLD);
-    let pill_inactive = Style::default().fg(Color::DarkGray);
-
-    match app.tab {
-        Tab::Workers => {
-            left_spans.push(Span::styled(w_title, pill_active));
-            left_spans.push(Span::raw(" "));
-            left_spans.push(Span::styled(h_title, pill_inactive));
-            left_spans.push(Span::raw(" "));
-            left_spans.push(Span::styled(s_title, pill_inactive));
-        }
-        Tab::History => {
-            left_spans.push(Span::styled(w_title, pill_inactive));
-            left_spans.push(Span::raw(" "));
-            left_spans.push(Span::styled(h_title, pill_active));
-            left_spans.push(Span::raw(" "));
-            left_spans.push(Span::styled(s_title, pill_inactive));
-        }
-        Tab::Search => {
-            left_spans.push(Span::styled(w_title, pill_inactive));
-            left_spans.push(Span::raw(" "));
-            left_spans.push(Span::styled(h_title, pill_inactive));
-            left_spans.push(Span::raw(" "));
-            left_spans.push(Span::styled(s_title, pill_active));
-        }
-    }
-
-    left_spans.push(Span::raw("  "));
-    if app.search_mode {
-        left_spans.push(Span::styled(
-            "❯ ",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ));
-        left_spans.push(Span::styled(
-            &app.search_query,
-            Style::default().fg(Color::White),
-        ));
-        if app.cursor_visible() {
-            left_spans.push(Span::styled("█", Style::default().fg(Color::White)));
-        } else {
-            left_spans.push(Span::styled(" ", Style::default().fg(Color::White)));
-        }
-    } else if !app.search_query.is_empty() {
-        left_spans.push(Span::styled(
-            "❯ ",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ));
-        left_spans.push(Span::styled(
-            &app.search_query,
-            Style::default().fg(Color::White),
-        ));
-    }
-
-    let right_spans = if app.is_unauthorized {
-        vec![Span::styled(
-            "unauthorized",
-            Style::default().fg(Color::DarkGray),
-        )]
-    } else if !has_stats {
-        vec![
-            Span::styled(
-                format!("{} ", app.spinner()),
-                Style::default().fg(Color::White),
-            ),
-            Span::styled("connecting", Style::default().fg(Color::DarkGray)),
-        ]
-    } else {
-        let mut r = vec![Span::styled(
-            if is_online { "online" } else { "offline" },
-            Style::default().fg(if is_online {
-                Color::Green
-            } else {
-                Color::DarkGray
-            }),
-        )];
-
-        if let Some(lat) = app.latency_ms
-            && area.width >= 75
-        {
-            r.push(Span::styled("  •  ", Style::default().fg(Color::DarkGray)));
-            r.push(Span::styled(
-                format!("{lat}ms"),
-                Style::default().fg(Color::DarkGray),
-            ));
-        }
-
-        if area.width >= 90 {
-            r.push(Span::styled("  •  ", Style::default().fg(Color::DarkGray)));
-            r.push(Span::styled(
-                uptime_str,
-                Style::default().fg(Color::DarkGray),
-            ));
-        }
-        r
-    };
-
-    let left_p = Paragraph::new(Line::from(left_spans));
-    let right_p = Paragraph::new(Line::from(right_spans)).alignment(Alignment::Right);
-
-    let header_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-        .split(area);
-
-    frame.render_widget(left_p, header_cols[0]);
-    frame.render_widget(right_p, header_cols[1]);
-
-    if !is_compact && area.height >= 2 {
-        let sep_area = Rect::new(area.x, area.y + 1, area.width, 1);
-        let sep = Paragraph::new("─".repeat(area.width as usize))
-            .style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(sep, sep_area);
+        format!(" {name} ")
     }
 }
 
-fn render_footer(app: &App, frame: &mut Frame, area: Rect, width: u16) {
-    let footer_line = if app.auth_mode {
-        Line::from(vec![
-            Span::styled(" tab ", Style::default().fg(Color::Black).bg(Color::White)),
-            Span::styled(" next  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                " enter ",
-                Style::default().fg(Color::Black).bg(Color::Green),
+fn render_header(app: &App, frame: &mut Frame, area: Rect, compact: bool) {
+    let stats = app.stats.as_ref();
+    let tabs = [
+        (
+            Tab::Workers,
+            tab_title(
+                "Workers",
+                stats.is_some() || !app.workers.is_empty(),
+                stats
+                    .and_then(|s| s.active_printers)
+                    .unwrap_or(app.workers.len()),
             ),
-            Span::styled(" save  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                " esc ",
-                Style::default().fg(Color::Black).bg(Color::DarkGray),
+        ),
+        (
+            Tab::History,
+            tab_title(
+                "History",
+                stats.is_some() || !app.history.is_empty(),
+                stats
+                    .and_then(|s| s.history_count)
+                    .unwrap_or(app.history.len()),
             ),
-            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
-        ])
-    } else if app.search_mode {
-        Line::from(vec![
-            Span::styled(" esc ", Style::default().fg(Color::Black).bg(Color::White)),
-            Span::styled(" exit  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                " enter ",
-                Style::default().fg(Color::Black).bg(Color::White),
-            ),
-            Span::styled(" confirm", Style::default().fg(Color::DarkGray)),
-        ])
-    } else if width < 60 {
-        Line::from(vec![
-            Span::styled("tab", Style::default().fg(Color::White)),
-            Span::styled(" switch • ", Style::default().fg(Color::DarkGray)),
-            Span::styled("e", Style::default().fg(Color::White)),
-            Span::styled(" auth • ", Style::default().fg(Color::DarkGray)),
-            Span::styled("q", Style::default().fg(Color::White)),
-            Span::styled(" quit", Style::default().fg(Color::DarkGray)),
-        ])
-    } else {
-        let status_span = if let Some(toast) = app.active_toast() {
-            Span::styled(
-                format!(" ✓ {toast} "),
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else if app.is_loading {
-            Span::styled(
-                format!("{} {}", app.spinner(), app.status_msg),
-                Style::default().fg(Color::White),
-            )
-        } else {
-            Span::styled(&app.status_msg, Style::default().fg(Color::DarkGray))
-        };
+        ),
+        (Tab::Search, " Search ".to_string()),
+    ];
 
-        Line::from(vec![
-            Span::styled("tab", Style::default().fg(Color::White)),
-            Span::styled(" switch  •  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("j/k", Style::default().fg(Color::White)),
-            Span::styled(" move  •  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("/", Style::default().fg(Color::White)),
-            Span::styled(" search  •  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("e", Style::default().fg(Color::White)),
-            Span::styled(" auth  •  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("x", Style::default().fg(Color::White)),
-            Span::styled(" clear  •  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("r", Style::default().fg(Color::White)),
-            Span::styled(" refresh  •  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("q", Style::default().fg(Color::White)),
-            Span::styled(" quit", Style::default().fg(Color::DarkGray)),
-            Span::raw("    "),
-            status_span,
-        ])
+    let mut left = Vec::new();
+    for (i, (tab, title)) in tabs.into_iter().enumerate() {
+        if i > 0 {
+            left.push(Span::raw(" "));
+        }
+        left.push(Span::styled(
+            title,
+            if tab == app.tab { ACTIVE_PILL } else { DIM },
+        ));
+    }
+    left.push(Span::raw("  "));
+    if app.search_mode || !app.search_query.is_empty() {
+        left.push(Span::styled("❯ ", BOLD));
+        left.push(Span::styled(app.search_query.as_str(), WHITE));
+        if app.search_mode {
+            let cursor = if app.cursor_visible() { "█" } else { " " };
+            left.push(Span::styled(cursor, WHITE));
+        }
+    }
+
+    let right = match stats {
+        _ if app.is_unauthorized => vec![Span::styled("unauthorized", DIM)],
+        None => vec![
+            Span::styled(format!("{} ", app.spinner()), WHITE),
+            Span::styled("connecting", DIM),
+        ],
+        Some(stats) => {
+            let online = stats
+                .status
+                .as_deref()
+                .is_some_and(|s| s.eq_ignore_ascii_case("online"));
+            let mut spans = vec![if online {
+                Span::styled("online", GREEN)
+            } else {
+                Span::styled("offline", DIM)
+            }];
+            if let Some(latency) = app.latency_ms
+                && area.width >= 75
+            {
+                spans.push(Span::styled(format!("{SEPARATOR}{latency}ms"), DIM));
+            }
+            if area.width >= 90 {
+                let uptime = app.realtime_uptime().map_or_else(|| "-".into(), fmt_dur);
+                spans.push(Span::styled(format!("{SEPARATOR}{uptime}"), DIM));
+            }
+            spans
+        }
     };
 
-    frame.render_widget(Paragraph::new(footer_line), area);
+    let [left_area, right_area] =
+        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(area);
+    frame.render_widget(Paragraph::new(Line::from(left)), left_area);
+    frame.render_widget(
+        Paragraph::new(Line::from(right)).alignment(Alignment::Right),
+        right_area,
+    );
+
+    if !compact && area.height >= 2 {
+        let rule = Paragraph::new("─".repeat(usize::from(area.width))).style(DIM);
+        frame.render_widget(rule, Rect::new(area.x, area.y + 1, area.width, 1));
+    }
+}
+
+fn status_span(app: &App) -> Span<'_> {
+    if let Some(toast) = app.active_toast() {
+        Span::styled(
+            format!(" ✓ {toast} "),
+            Style::new()
+                .fg(Color::Black)
+                .bg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else if app.is_loading {
+        Span::styled(format!("{} {}", app.spinner(), app.status_msg), WHITE)
+    } else {
+        Span::styled(app.status_msg.as_str(), DIM)
+    }
+}
+
+fn render_footer(app: &App, frame: &mut Frame, area: Rect) {
+    let line = if app.auth_mode {
+        badges(&[
+            (" tab ", Color::White, " next  "),
+            (" enter ", Color::Green, " save  "),
+            (" esc ", Color::DarkGray, " cancel"),
+        ])
+    } else if app.search_mode {
+        badges(&[
+            (" esc ", Color::White, " exit  "),
+            (" enter ", Color::White, " confirm"),
+        ])
+    } else if area.width < 60 {
+        Line::from(key_hints(
+            &[("tab", "switch"), ("e", "auth"), ("q", "quit")],
+            " • ",
+        ))
+    } else {
+        let mut spans = key_hints(
+            &[
+                ("tab", "switch"),
+                ("j/k", "move"),
+                ("/", "search"),
+                ("e", "auth"),
+                ("x", "clear"),
+                ("r", "refresh"),
+                ("q", "quit"),
+            ],
+            SEPARATOR,
+        );
+        spans.push(Span::raw("    "));
+        spans.push(status_span(app));
+        Line::from(spans)
+    };
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 fn render_auth_modal(app: &App, frame: &mut Frame, area: Rect) {
-    let modal_width = 46.min(area.width.saturating_sub(2));
-    let modal_height = 7.min(area.height.saturating_sub(2));
+    let modal = auth_modal_area(area);
+    frame.render_widget(Clear, modal);
+    frame.render_widget(panel(" Password ", WHITE), modal);
 
-    let x = (area.width.saturating_sub(modal_width)) / 2;
-    let y = (area.height.saturating_sub(modal_height)) / 2;
-    let modal_area = Rect::new(x, y, modal_width, modal_height);
-
-    frame.render_widget(Clear, modal_area);
-
-    let modal_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::White))
-        .title(" Password ");
-    frame.render_widget(modal_block, modal_area);
-
-    let inner_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Length(1)])
+    let [input_area, hint_area] = Layout::vertical([Constraint::Length(3), Constraint::Length(1)])
         .margin(1)
-        .split(modal_area);
+        .areas(modal);
 
-    let mask = |val: &str| {
-        if app.mask_credentials {
-            if val.is_empty() {
-                String::new()
-            } else {
-                "•".repeat(val.len())
-            }
-        } else {
-            val.to_string()
-        }
+    let value = if app.mask_credentials {
+        "•".repeat(app.input_password.len())
+    } else {
+        app.input_password.clone()
     };
-
-    let f_val = mask(&app.input_password);
-    let f = Paragraph::new(Line::from(vec![
-        Span::styled("› ", Style::default().fg(Color::White)),
-        Span::styled(
-            if f_val.is_empty() {
-                "enter password..."
-            } else {
-                &f_val
-            },
-            Style::default().fg(if f_val.is_empty() {
-                Color::DarkGray
-            } else {
-                Color::White
-            }),
-        ),
-        Span::styled("█", Style::default().fg(Color::White)),
+    let field = if value.is_empty() {
+        Span::styled("enter password...", DIM)
+    } else {
+        Span::styled(value, WHITE)
+    };
+    let input = Paragraph::new(Line::from(vec![
+        Span::styled("› ", WHITE),
+        field,
+        Span::styled("█", WHITE),
     ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::White))
-            .title(" Password "),
+    .block(panel(" Password ", WHITE));
+    frame.render_widget(input, input_area);
+
+    let toggle = if app.mask_credentials { "show" } else { "hide" };
+    let hint = key_hints(
+        &[("enter", "save"), ("tab", toggle), ("esc", "cancel")],
+        SEPARATOR,
     );
-    frame.render_widget(f, inner_chunks[0]);
-
-    let toggle_label = if app.mask_credentials { "show" } else { "hide" };
-
-    let hint = Paragraph::new(Line::from(vec![
-        Span::styled("enter", Style::default().fg(Color::White)),
-        Span::styled(" save  •  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("tab", Style::default().fg(Color::White)),
-        Span::styled(
-            format!(" {toggle_label}  •  "),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled("esc", Style::default().fg(Color::White)),
-        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
-    ]))
-    .alignment(Alignment::Center);
-    frame.render_widget(hint, inner_chunks[1]);
+    frame.render_widget(
+        Paragraph::new(Line::from(hint)).alignment(Alignment::Center),
+        hint_area,
+    );
 }
 
-fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
-    let filtered = app.filtered_workers();
-    if filtered.is_empty() {
-        let msg = if app.is_loading && !app.is_unauthorized {
-            "Loading..."
-        } else if app.is_unauthorized {
-            "401 Unauthorized"
-        } else if !app.search_query.is_empty() {
-            "No matches."
-        } else {
-            "No workers."
-        };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .title(" Workers ");
-
-        let inner_area = block.inner(area);
-        frame.render_widget(block, area);
-
-        let y_offset = inner_area.height.saturating_sub(1) / 2;
-        let text_area = Rect::new(inner_area.x, inner_area.y + y_offset, inner_area.width, 1);
-
-        let p = Paragraph::new(Span::styled(
-            msg,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .alignment(Alignment::Center);
-
-        frame.render_widget(p, text_area);
-        return;
+fn empty_message<'a>(app: &App, loading: &'a str, no_match: &'a str, empty: &'a str) -> &'a str {
+    if app.is_unauthorized {
+        "401 Unauthorized"
+    } else if app.is_loading {
+        loading
+    } else if !app.search_query.is_empty() {
+        no_match
+    } else {
+        empty
     }
+}
 
-    let sel_worker = filtered.get(app.selected_worker).copied();
-    let detail_height = 3;
+fn render_empty(frame: &mut Frame, area: Rect, title: &str, message: &str) {
+    let block = panel(title, DIM);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let line = Rect::new(
+        inner.x,
+        inner.y + inner.height.saturating_sub(1) / 2,
+        inner.width,
+        1,
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(message, BOLD)).alignment(Alignment::Center),
+        line,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_table<T>(
+    app: &App,
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    items: &[&T],
+    selected: usize,
+    columns: &[Column<T>],
+    details: fn(&T) -> Vec<Detail<'_>>,
+) {
+    let visible: Vec<&Column<T>> = columns
+        .iter()
+        .filter(|c| area.width >= c.min_width)
+        .collect();
     let show_details = area.height >= 14;
+    let [table_area, detail_area] = Layout::vertical([
+        Constraint::Min(4),
+        Constraint::Length(if show_details { 3 } else { 0 }),
+    ])
+    .areas(area);
 
-    let chunks = if show_details {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(4), Constraint::Length(detail_height)])
-            .split(area)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(4)])
-            .split(area)
-    };
-
-    let (headers, widths): (Vec<&str>, Vec<Constraint>) = if area.width >= 90 {
-        (
-            vec![
-                "", "IDENT", "IP", "AGENT", "JOBS", "CONNS", "UPTIME", "STATUS",
-            ],
-            vec![
-                Constraint::Length(2),
-                Constraint::Percentage(22),
-                Constraint::Percentage(18),
-                Constraint::Percentage(22),
-                Constraint::Percentage(10),
-                Constraint::Percentage(8),
-                Constraint::Percentage(10),
-                Constraint::Percentage(10),
-            ],
-        )
-    } else if area.width >= 55 {
-        (
-            vec!["", "IDENT", "IP", "JOBS", "CONNS", "STATUS"],
-            vec![
-                Constraint::Length(2),
-                Constraint::Percentage(32),
-                Constraint::Percentage(28),
-                Constraint::Percentage(12),
-                Constraint::Percentage(10),
-                Constraint::Percentage(18),
-            ],
-        )
-    } else {
-        (
-            vec!["", "IDENT", "JOBS", "STATUS"],
-            vec![
-                Constraint::Length(2),
-                Constraint::Percentage(50),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-            ],
-        )
-    };
-
-    let header = Row::new(headers.into_iter().map(|h| {
-        Cell::from(Span::styled(
-            h,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ))
-    }))
-    .height(1)
+    let header = Row::new(
+        std::iter::once("")
+            .chain(visible.iter().map(|c| c.title))
+            .map(|title| Span::styled(title, BOLD)),
+    )
     .bottom_margin(1);
+    let widths = std::iter::once(Constraint::Length(2)).chain(visible.iter().map(|c| c.width));
 
-    let rows = filtered.iter().enumerate().map(|(idx, w)| {
-        let sel = idx == app.selected_worker;
-        let is_flashing = app
-            .flash_highlight
-            .map(|t| t.elapsed().as_millis() < 600)
-            .unwrap_or(false);
-        let st = if sel {
-            Style::default()
-                .bg(Color::Rgb(35, 35, 40))
-                .add_modifier(Modifier::BOLD)
-        } else if is_flashing && idx == 0 {
-            Style::default().bg(Color::Rgb(25, 45, 30))
+    let flashing = app
+        .flash_highlight
+        .is_some_and(|t| t.elapsed().as_millis() < 600);
+    let rows = items.iter().copied().enumerate().map(|(index, item)| {
+        let is_selected = index == selected;
+        let style = if is_selected {
+            SELECTED_ROW
+        } else if flashing && index == 0 {
+            FLASH_ROW
         } else {
-            Style::default()
+            Style::new()
         };
-
-        let indicator = if sel { "❯" } else { " " };
-        let mut cells = vec![
-            Cell::from(Span::styled(
-                indicator,
-                Style::default().fg(if sel { Color::White } else { Color::DarkGray }),
-            )),
-            Cell::from(Span::styled(
-                w.id.as_deref().unwrap_or("-"),
-                Style::default().fg(Color::White),
-            )),
-        ];
-
-        if area.width >= 55 {
-            cells.push(Cell::from(Span::styled(
-                w.ip.as_deref().unwrap_or("-"),
-                Style::default().fg(Color::White),
-            )));
-        }
-
-        if area.width >= 90 {
-            cells.push(Cell::from(Span::styled(
-                w.user_agent.as_deref().unwrap_or("-"),
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
-
-        cells.push(Cell::from(Span::styled(
-            w.jobs_completed.unwrap_or(0).to_string(),
-            Style::default().fg(Color::LightGreen),
-        )));
-
-        if area.width >= 55 {
-            cells.push(Cell::from(Span::styled(
-                w.connections.unwrap_or(1).to_string(),
-                Style::default().fg(Color::White),
-            )));
-        }
-
-        if area.width >= 90 {
-            let now_ms = chrono::Local::now().timestamp_millis().max(0) as u64;
-            let uptime_str = w
-                .connected_at
-                .map(|t| fmt_dur(now_ms.saturating_sub(t) / 1000))
-                .unwrap_or_else(|| "-".to_string());
-            cells.push(Cell::from(Span::styled(
-                uptime_str,
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
-
-        cells.push(Cell::from(Span::styled(
-            "online",
-            Style::default().fg(Color::Green),
-        )));
-
-        Row::new(cells).style(st).height(1)
+        let indicator = if is_selected {
+            Span::styled("❯", WHITE)
+        } else {
+            Span::styled(" ", DIM)
+        };
+        Row::new(std::iter::once(indicator).chain(visible.iter().map(|c| (c.cell)(item))))
+            .style(style)
     });
 
-    let mut state = TableState::default();
-    state.select(Some(app.selected_worker));
+    let mut state = TableState::default().with_selected(Some(selected));
     frame.render_stateful_widget(
-        Table::new(rows, widths).header(header).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(" Workers "),
-        ),
-        chunks[0],
+        Table::new(rows, widths)
+            .header(header)
+            .block(panel(title, DIM)),
+        table_area,
         &mut state,
     );
 
-    if show_details && let Some(w) = sel_worker {
-        let id_str = w.id.as_deref().unwrap_or("?");
-        let ip_str = w.ip.as_deref().unwrap_or("?");
-        let agent_str = w.user_agent.as_deref().unwrap_or("?");
-        let jobs_str = format!("{}", w.jobs_completed.unwrap_or(0));
-        let conns_str = format!("{}", w.connections.unwrap_or(1));
-
-        let mut detail_spans = vec![
-            Span::styled("Ident: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                id_str,
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("  •  Status: ", Style::default().fg(Color::DarkGray)),
-            Span::styled("online", Style::default().fg(Color::Green)),
-            Span::styled("  •  Jobs: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(jobs_str, Style::default().fg(Color::LightGreen)),
-            Span::styled("  •  Conns: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(conns_str, Style::default().fg(Color::White)),
-        ];
-
-        if area.width >= 75 {
-            detail_spans.push(Span::styled(
-                "  •  IP: ",
-                Style::default().fg(Color::DarkGray),
-            ));
-            detail_spans.push(Span::styled(ip_str, Style::default().fg(Color::White)));
+    if let Some(item) = items.get(selected).filter(|_| show_details) {
+        let mut spans = Vec::new();
+        for (min_width, label, value) in details(item) {
+            if area.width >= min_width {
+                let lead = if spans.is_empty() { "" } else { SEPARATOR };
+                spans.push(Span::styled(format!("{lead}{label}: "), DIM));
+                spans.push(value);
+            }
         }
-
-        if area.width >= 100 {
-            detail_spans.push(Span::styled(
-                "  •  Agent: ",
-                Style::default().fg(Color::DarkGray),
-            ));
-            detail_spans.push(Span::styled(agent_str, Style::default().fg(Color::Gray)));
-        }
-
-        let detail = Paragraph::new(Line::from(detail_spans)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(" Selected "),
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)).block(panel(" Selected ", DIM)),
+            detail_area,
         );
-        frame.render_widget(detail, chunks[1]);
+    }
+}
+
+fn worker_uptime(worker: &WorkerInfo) -> String {
+    let now_ms = u64::try_from(Local::now().timestamp_millis()).unwrap_or(0);
+    worker.connected_at.map_or_else(
+        || "-".to_string(),
+        |t| fmt_dur(now_ms.saturating_sub(t) / 1000),
+    )
+}
+
+fn worker_columns() -> [Column<WorkerInfo>; 7] {
+    [
+        Column {
+            min_width: 0,
+            title: "IDENT",
+            width: Constraint::Fill(22),
+            cell: |w| Span::styled(or_dash(w.id.as_deref()), WHITE),
+        },
+        Column {
+            min_width: 55,
+            title: "IP",
+            width: Constraint::Fill(18),
+            cell: |w| Span::styled(or_dash(w.ip.as_deref()), WHITE),
+        },
+        Column {
+            min_width: 90,
+            title: "AGENT",
+            width: Constraint::Fill(22),
+            cell: |w| Span::styled(or_dash(w.user_agent.as_deref()), DIM),
+        },
+        Column {
+            min_width: 0,
+            title: "JOBS",
+            width: Constraint::Fill(10),
+            cell: |w| Span::styled(w.jobs_completed.unwrap_or(0).to_string(), LIGHT_GREEN),
+        },
+        Column {
+            min_width: 55,
+            title: "CONNS",
+            width: Constraint::Fill(8),
+            cell: |w| Span::styled(w.connections.unwrap_or(1).to_string(), WHITE),
+        },
+        Column {
+            min_width: 90,
+            title: "UPTIME",
+            width: Constraint::Fill(10),
+            cell: |w| Span::styled(worker_uptime(w), DIM),
+        },
+        Column {
+            min_width: 0,
+            title: "STATUS",
+            width: Constraint::Fill(10),
+            cell: |_| Span::styled("online", GREEN),
+        },
+    ]
+}
+
+fn worker_details(w: &WorkerInfo) -> Vec<Detail<'_>> {
+    vec![
+        (
+            0,
+            "Ident",
+            Span::styled(w.id.as_deref().unwrap_or("?"), BOLD),
+        ),
+        (0, "Status", Span::styled("online", GREEN)),
+        (
+            0,
+            "Jobs",
+            Span::styled(w.jobs_completed.unwrap_or(0).to_string(), LIGHT_GREEN),
+        ),
+        (
+            0,
+            "Conns",
+            Span::styled(w.connections.unwrap_or(1).to_string(), WHITE),
+        ),
+        (
+            75,
+            "IP",
+            Span::styled(w.ip.as_deref().unwrap_or("?"), WHITE),
+        ),
+        (
+            100,
+            "Agent",
+            Span::styled(w.user_agent.as_deref().unwrap_or("?"), GRAY),
+        ),
+    ]
+}
+
+fn history_status(h: &HistoryEntry) -> Span<'_> {
+    let status = or_dash(h.status.as_deref());
+    let style = if matches!(status, "released" | "printed") {
+        GREEN
+    } else {
+        DIM
+    };
+    Span::styled(status, style)
+}
+
+fn history_columns() -> [Column<HistoryEntry>; 6] {
+    [
+        Column {
+            min_width: 0,
+            title: "ID",
+            width: Constraint::Length(8),
+            cell: |h| Span::styled(h.display_id(), WHITE),
+        },
+        Column {
+            min_width: 0,
+            title: "STUDENT",
+            width: Constraint::Fill(24),
+            cell: |h| Span::styled(or_dash(h.student.as_deref()), LIGHT_GREEN),
+        },
+        Column {
+            min_width: 90,
+            title: "IP",
+            width: Constraint::Fill(24),
+            cell: |h| Span::styled(or_dash(h.client_ip.as_deref()), DIM),
+        },
+        Column {
+            min_width: 60,
+            title: "SIZE",
+            width: Constraint::Fill(14),
+            cell: |h| Span::styled(fmt_bytes(h.size_bytes.unwrap_or(0)), WHITE),
+        },
+        Column {
+            min_width: 0,
+            title: "STATUS",
+            width: Constraint::Fill(14),
+            cell: history_status,
+        },
+        Column {
+            min_width: 60,
+            title: "TIME",
+            width: Constraint::Fill(24),
+            cell: |h| Span::styled(fmt_ts(h.timestamp.unwrap_or(0)), DIM),
+        },
+    ]
+}
+
+fn history_details(h: &HistoryEntry) -> Vec<Detail<'_>> {
+    vec![
+        (0, "ID", Span::styled(h.display_id(), WHITE)),
+        (
+            0,
+            "Student",
+            Span::styled(or_dash(h.student.as_deref()), LIGHT_GREEN),
+        ),
+        (
+            0,
+            "Status",
+            Span::styled(
+                or_dash(h.status.as_deref()),
+                GREEN.add_modifier(Modifier::BOLD),
+            ),
+        ),
+        (
+            70,
+            "Size",
+            Span::styled(fmt_bytes(h.size_bytes.unwrap_or(0)), WHITE),
+        ),
+        (
+            90,
+            "IP",
+            Span::styled(or_dash(h.client_ip.as_deref()), WHITE),
+        ),
+        (
+            115,
+            "Host",
+            Span::styled(or_dash(h.hostname.as_deref()), GRAY),
+        ),
+        (
+            60,
+            "Time",
+            Span::styled(fmt_ts(h.timestamp.unwrap_or(0)), WHITE),
+        ),
+    ]
+}
+
+fn render_workers(app: &App, frame: &mut Frame, area: Rect) {
+    let items = app.filtered_workers();
+    if items.is_empty() {
+        let msg = empty_message(app, "Loading...", "No matches.", "No workers.");
+        render_empty(frame, area, " Workers ", msg);
+    } else {
+        render_table(
+            app,
+            frame,
+            area,
+            " Workers ",
+            &items,
+            app.selected_worker,
+            &worker_columns(),
+            worker_details,
+        );
     }
 }
 
 fn render_history(app: &App, frame: &mut Frame, area: Rect) {
-    let filtered = app.filtered_history();
-    if filtered.is_empty() {
-        let msg = if app.is_loading && !app.is_unauthorized {
-            "Loading..."
-        } else if app.is_unauthorized {
-            "401 Unauthorized"
-        } else if !app.search_query.is_empty() {
-            "No matches."
-        } else {
-            "No history."
-        };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .title(" History ");
-
-        let inner_area = block.inner(area);
-        frame.render_widget(block, area);
-
-        let y_offset = inner_area.height.saturating_sub(1) / 2;
-        let text_area = Rect::new(inner_area.x, inner_area.y + y_offset, inner_area.width, 1);
-
-        let p = Paragraph::new(Span::styled(
-            msg,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .alignment(Alignment::Center);
-
-        frame.render_widget(p, text_area);
-        return;
-    }
-
-    let sel_history = filtered.get(app.selected_history).copied();
-    let detail_height = 3;
-    let show_details = area.height >= 14;
-
-    let chunks = if show_details {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(4), Constraint::Length(detail_height)])
-            .split(area)
+    let items = app.filtered_history();
+    if items.is_empty() {
+        let msg = empty_message(app, "Loading...", "No matches.", "No history.");
+        render_empty(frame, area, " History ", msg);
     } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(4)])
-            .split(area)
-    };
-
-    let (headers, widths): (Vec<&str>, Vec<Constraint>) = if area.width >= 90 {
-        (
-            vec!["", "ID", "STUDENT", "IP", "SIZE", "STATUS", "TIME"],
-            vec![
-                Constraint::Length(2),
-                Constraint::Length(8),
-                Constraint::Percentage(24),
-                Constraint::Percentage(24),
-                Constraint::Percentage(14),
-                Constraint::Percentage(14),
-                Constraint::Percentage(24),
-            ],
-        )
-    } else if area.width >= 60 {
-        (
-            vec!["", "ID", "STUDENT", "SIZE", "STATUS", "TIME"],
-            vec![
-                Constraint::Length(2),
-                Constraint::Length(8),
-                Constraint::Percentage(32),
-                Constraint::Percentage(18),
-                Constraint::Percentage(18),
-                Constraint::Percentage(32),
-            ],
-        )
-    } else {
-        (
-            vec!["", "ID", "STUDENT", "STATUS"],
-            vec![
-                Constraint::Length(2),
-                Constraint::Length(8),
-                Constraint::Percentage(60),
-                Constraint::Percentage(32),
-            ],
-        )
-    };
-
-    let header = Row::new(headers.into_iter().map(|h| {
-        Cell::from(Span::styled(
-            h,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ))
-    }))
-    .height(1)
-    .bottom_margin(1);
-
-    let rows = filtered.iter().enumerate().map(|(idx, h)| {
-        let sel = idx == app.selected_history;
-        let is_flashing = app
-            .flash_highlight
-            .map(|t| t.elapsed().as_millis() < 600)
-            .unwrap_or(false);
-        let st = if sel {
-            Style::default()
-                .bg(Color::Rgb(35, 35, 40))
-                .add_modifier(Modifier::BOLD)
-        } else if is_flashing && idx == 0 {
-            Style::default().bg(Color::Rgb(25, 45, 30))
-        } else {
-            Style::default()
-        };
-        let qid = h.display_id();
-        let status = h.status.as_deref().unwrap_or("-");
-        let status_col = if status == "released" || status == "printed" {
-            Color::Green
-        } else {
-            Color::DarkGray
-        };
-
-        let indicator = if sel { "❯" } else { " " };
-        let mut cells = vec![
-            Cell::from(Span::styled(
-                indicator,
-                Style::default().fg(if sel { Color::White } else { Color::DarkGray }),
-            )),
-            Cell::from(Span::styled(qid, Style::default().fg(Color::White))),
-            Cell::from(Span::styled(
-                h.student.as_deref().unwrap_or("-"),
-                Style::default().fg(Color::LightGreen),
-            )),
-        ];
-
-        if area.width >= 90 {
-            cells.push(Cell::from(Span::styled(
-                h.client_ip.as_deref().unwrap_or("-"),
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
-
-        if area.width >= 60 {
-            cells.push(Cell::from(Span::styled(
-                fmt_bytes(h.size_bytes.unwrap_or(0)),
-                Style::default().fg(Color::White),
-            )));
-        }
-
-        cells.push(Cell::from(Span::styled(
-            status,
-            Style::default().fg(status_col),
-        )));
-
-        if area.width >= 60 {
-            cells.push(Cell::from(Span::styled(
-                fmt_ts(h.timestamp.unwrap_or(0)),
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
-
-        Row::new(cells).style(st).height(1)
-    });
-
-    let mut state = TableState::default();
-    state.select(Some(app.selected_history));
-    frame.render_stateful_widget(
-        Table::new(rows, widths).header(header).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(" History "),
-        ),
-        chunks[0],
-        &mut state,
-    );
-
-    if show_details && let Some(h) = sel_history {
-        let qid_str = h.display_id();
-        let student_str = h.student.as_deref().unwrap_or("-");
-        let status_str = h.status.as_deref().unwrap_or("-");
-        let client_ip_str = h.client_ip.as_deref().unwrap_or("-");
-        let hostname_str = h.hostname.as_deref().unwrap_or("-");
-        let size_str = fmt_bytes(h.size_bytes.unwrap_or(0));
-        let time_str = fmt_ts(h.timestamp.unwrap_or(0));
-
-        let mut detail_spans = vec![
-            Span::styled("ID: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(qid_str, Style::default().fg(Color::White)),
-            Span::styled("  •  Student: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(student_str, Style::default().fg(Color::LightGreen)),
-            Span::styled("  •  Status: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                status_str,
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ];
-
-        if area.width >= 70 {
-            detail_spans.push(Span::styled(
-                "  •  Size: ",
-                Style::default().fg(Color::DarkGray),
-            ));
-            detail_spans.push(Span::styled(size_str, Style::default().fg(Color::White)));
-        }
-
-        if area.width >= 90 {
-            detail_spans.push(Span::styled(
-                "  •  IP: ",
-                Style::default().fg(Color::DarkGray),
-            ));
-            detail_spans.push(Span::styled(
-                client_ip_str,
-                Style::default().fg(Color::White),
-            ));
-        }
-
-        if area.width >= 115 {
-            detail_spans.push(Span::styled(
-                "  •  Host: ",
-                Style::default().fg(Color::DarkGray),
-            ));
-            detail_spans.push(Span::styled(hostname_str, Style::default().fg(Color::Gray)));
-        }
-
-        if area.width >= 60 {
-            detail_spans.push(Span::styled(
-                "  •  Time: ",
-                Style::default().fg(Color::DarkGray),
-            ));
-            detail_spans.push(Span::styled(time_str, Style::default().fg(Color::White)));
-        }
-
-        let detail = Paragraph::new(Line::from(detail_spans)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(" Selected "),
+        render_table(
+            app,
+            frame,
+            area,
+            " History ",
+            &items,
+            app.selected_history,
+            &history_columns(),
+            history_details,
         );
-        frame.render_widget(detail, chunks[1]);
     }
 }
 
 fn render_search(app: &App, frame: &mut Frame, area: Rect) {
-    let f_workers = app.filtered_workers();
-    let f_history = app.filtered_history();
-
-    let has_matches = !f_workers.is_empty() || !f_history.is_empty();
-    if !has_matches {
-        let msg = if app.is_loading && !app.is_unauthorized {
-            "Searching..."
-        } else if app.is_unauthorized {
-            "401 Unauthorized"
-        } else if !app.search_query.is_empty() {
-            "No matches found."
-        } else {
-            "Type query to search workers and history."
-        };
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .title(" Search ");
-
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        let y_offset = inner.height.saturating_sub(1) / 2;
-        let text_area = Rect::new(inner.x, inner.y + y_offset, inner.width, 1);
-        let p = Paragraph::new(Span::styled(
-            msg,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .alignment(Alignment::Center);
-
-        frame.render_widget(p, text_area);
-        return;
+    let has_workers = !app.filtered_workers().is_empty();
+    let has_history = !app.filtered_history().is_empty();
+    match (has_workers, has_history) {
+        (false, false) => {
+            let msg = empty_message(
+                app,
+                "Searching...",
+                "No matches found.",
+                "Type query to search workers and history.",
+            );
+            render_empty(frame, area, " Search ", msg);
+        }
+        (true, true) if area.height >= 16 => {
+            let [top, bottom] =
+                Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)])
+                    .areas(area);
+            render_workers(app, frame, top);
+            render_history(app, frame, bottom);
+        }
+        (true, false) => render_workers(app, frame, area),
+        _ => render_history(app, frame, area),
     }
+}
 
-    if !f_workers.is_empty() && !f_history.is_empty() && area.height >= 16 {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(area);
-
-        render_workers(app, frame, chunks[0]);
-        render_history(app, frame, chunks[1]);
-    } else if !f_workers.is_empty() && f_history.is_empty() {
-        render_workers(app, frame, area);
-    } else {
-        render_history(app, frame, area);
+fn inspected_item(app: &App) -> (String, String) {
+    match app.tab {
+        Tab::Workers => app.filtered_workers().get(app.selected_worker).map_or_else(
+            || (" Worker ".to_string(), "{}".to_string()),
+            |w| {
+                (
+                    format!(" Worker: {} ", w.id.as_deref().unwrap_or("worker")),
+                    serde_json::to_string_pretty(w).unwrap_or_default(),
+                )
+            },
+        ),
+        Tab::History | Tab::Search => app
+            .filtered_history()
+            .get(app.selected_history)
+            .map_or_else(
+                || (" History ".to_string(), "{}".to_string()),
+                |h| {
+                    (
+                        format!(" Job: #{} ", h.display_id()),
+                        serde_json::to_string_pretty(h).unwrap_or_default(),
+                    )
+                },
+            ),
     }
 }
 
 fn render_inspector_modal(app: &App, frame: &mut Frame, area: Rect) {
-    let modal_width = 72.min(area.width.saturating_sub(4));
-    let modal_height = 22.min(area.height.saturating_sub(4));
+    let modal = inspector_modal_area(area);
+    frame.render_widget(Clear, modal);
 
-    let x = (area.width.saturating_sub(modal_width)) / 2;
-    let y = (area.height.saturating_sub(modal_height)) / 2;
-    let modal_area = Rect::new(x, y, modal_width, modal_height);
+    let (title, json) = inspected_item(app);
+    let lines: Vec<&str> = json.lines().collect();
+    let body_height = usize::from(modal.height.saturating_sub(4));
+    let scroll = app
+        .inspector_scroll
+        .min(lines.len().saturating_sub(body_height));
 
-    frame.render_widget(Clear, modal_area);
+    let block = panel(title, WHITE);
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    let [body, hint_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
 
-    let (title, json_str) = match app.tab {
-        Tab::Workers => {
-            let f = app.filtered_workers();
-            if let Some(w) = f.get(app.selected_worker) {
-                let id = w.id.as_deref().unwrap_or("worker");
-                (
-                    format!(" Worker: {id} "),
-                    serde_json::to_string_pretty(w).unwrap_or_default(),
-                )
-            } else {
-                (" Worker ".to_string(), "{}".to_string())
-            }
-        }
-        Tab::History | Tab::Search => {
-            let f = app.filtered_history();
-            if let Some(h) = f.get(app.selected_history) {
-                let qid = h.display_id();
-                (
-                    format!(" Job: #{qid} "),
-                    serde_json::to_string_pretty(h).unwrap_or_default(),
-                )
-            } else {
-                (" History ".to_string(), "{}".to_string())
-            }
-        }
-    };
+    let text: Vec<Line> = lines
+        .iter()
+        .skip(scroll)
+        .take(body_height)
+        .map(|line| Line::styled(*line, WHITE))
+        .collect();
+    frame.render_widget(Paragraph::new(text), body);
 
-    let lines: Vec<&str> = json_str.lines().collect();
-    let total_lines = lines.len();
-    let body_height = modal_height.saturating_sub(4) as usize;
-    let max_scroll = total_lines.saturating_sub(body_height);
-    let scroll = app.inspector_scroll.min(max_scroll);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::White))
-        .title(title);
-
-    let inner = block.inner(modal_area);
-    frame.render_widget(block, modal_area);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(inner);
-
-    let mut text_lines = Vec::new();
-    for line in lines.iter().skip(scroll).take(body_height) {
-        text_lines.push(Line::from(Span::styled(
-            *line,
-            Style::default().fg(Color::White),
-        )));
+    let mut hint = key_hints(&[("esc", "close"), ("↑/↓", "scroll")], SEPARATOR);
+    if lines.len() > body_height {
+        hint.push(Span::styled(
+            format!("{SEPARATOR}line {}/{}", scroll + 1, lines.len()),
+            DIM,
+        ));
     }
-    let p = Paragraph::new(text_lines);
-    frame.render_widget(p, chunks[0]);
-
-    let scroll_info = if total_lines > body_height {
-        format!("  •  line {}/{}", scroll + 1, total_lines)
-    } else {
-        String::new()
-    };
-
-    let hint = Paragraph::new(Line::from(vec![
-        Span::styled("esc", Style::default().fg(Color::White)),
-        Span::styled(" close  •  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("↑/↓", Style::default().fg(Color::White)),
-        Span::styled(" scroll", Style::default().fg(Color::DarkGray)),
-        Span::styled(scroll_info, Style::default().fg(Color::DarkGray)),
-    ]))
-    .alignment(Alignment::Center);
-    frame.render_widget(hint, chunks[1]);
+    frame.render_widget(
+        Paragraph::new(Line::from(hint)).alignment(Alignment::Center),
+        hint_area,
+    );
 }

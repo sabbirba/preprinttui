@@ -2,11 +2,12 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Local};
 use keyring::Entry;
 use reqwest::{
-    StatusCode,
-    header::{HeaderMap, HeaderValue},
+    Client, StatusCode,
+    header::{ETAG, HeaderMap, HeaderName, HeaderValue, IF_NONE_MATCH},
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{path::PathBuf, time::Instant};
+use tokio::sync::mpsc::UnboundedSender;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -21,23 +22,36 @@ const KEYRING_SERVICE: &str = "preprinttui";
 const KEYRING_WORKER_KEY: &str = "worker_key";
 const KEYRING_PASSWORD: &str = "password";
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 struct StoredCreds {
     worker_key: Option<String>,
     password: Option<String>,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, Default)]
 pub enum Tab {
-    Workers = 0,
-    History = 1,
-    Search = 2,
+    #[default]
+    Workers,
+    History,
+    Search,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub enum AuthField {
-    WorkerKey = 0,
-    Password = 1,
+impl Tab {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Workers => Self::History,
+            Self::History => Self::Search,
+            Self::Search => Self::Workers,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Workers => Self::Search,
+            Self::History => Self::Workers,
+            Self::Search => Self::History,
+        }
+    }
 }
 
 pub struct RefreshData {
@@ -50,6 +64,34 @@ pub struct RefreshData {
     pub has_new_data: bool,
 }
 
+impl RefreshData {
+    fn new(
+        stats: Option<PrintStats>,
+        workers: Option<Vec<WorkerInfo>>,
+        history: Option<Vec<HistoryEntry>>,
+        has_new_data: bool,
+    ) -> Self {
+        Self {
+            stats,
+            workers,
+            history,
+            is_unauthorized: false,
+            timestamp: Local::now(),
+            latency_ms: Some(0),
+            has_new_data,
+        }
+    }
+
+    fn unauthorized() -> Self {
+        Self {
+            is_unauthorized: true,
+            latency_ms: None,
+            ..Self::new(None, None, None, false)
+        }
+    }
+}
+
+#[derive(Default)]
 pub struct App {
     pub worker_key: Option<String>,
     pub password: Option<String>,
@@ -63,12 +105,9 @@ pub struct App {
     pub search_mode: bool,
     pub search_query: String,
     pub auth_mode: bool,
-    pub auth_field: AuthField,
-    pub input_worker_key: String,
     pub input_password: String,
     pub mask_credentials: bool,
     pub status_msg: String,
-    pub last_refresh: Option<DateTime<Local>>,
     pub auto_refresh: bool,
     pub is_loading: bool,
     pub is_unauthorized: bool,
@@ -81,45 +120,17 @@ pub struct App {
     pub flash_highlight: Option<Instant>,
 }
 
-impl Default for App {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl App {
     pub fn new() -> Self {
-        let (saved_key, saved_pwd) = load_saved_credentials();
-
+        let (worker_key, password) = load_saved_credentials();
         Self {
-            worker_key: saved_key,
-            password: saved_pwd,
-            tab: Tab::Workers,
-            stats: None,
-            uptime_anchor: None,
-            workers: Vec::new(),
-            history: Vec::new(),
-            selected_worker: 0,
-            selected_history: 0,
-            search_mode: false,
-            search_query: String::new(),
-            auth_mode: false,
-            auth_field: AuthField::WorkerKey,
-            input_worker_key: String::new(),
-            input_password: String::new(),
+            worker_key,
+            password,
             mask_credentials: true,
             status_msg: "Connecting...".to_string(),
-            last_refresh: None,
             auto_refresh: true,
             is_loading: true,
-            is_unauthorized: false,
-            should_quit: false,
-            tick_count: 0,
-            toast: None,
-            latency_ms: None,
-            inspector_mode: false,
-            inspector_scroll: 0,
-            flash_highlight: None,
+            ..Self::default()
         }
     }
 
@@ -128,12 +139,10 @@ impl App {
     }
 
     pub fn active_toast(&self) -> Option<&str> {
-        if let Some((msg, created)) = &self.toast
-            && created.elapsed().as_secs_f32() < 2.5
-        {
-            return Some(msg.as_str());
-        }
-        None
+        self.toast
+            .as_ref()
+            .filter(|(_, created)| created.elapsed().as_secs_f32() < 2.5)
+            .map(|(msg, _)| msg.as_str())
     }
 
     pub fn spinner(&self) -> &'static str {
@@ -147,79 +156,64 @@ impl App {
 
     pub fn open_auth_modal(&mut self) {
         self.auth_mode = true;
-        self.auth_field = AuthField::Password;
         self.input_password = self.password.clone().unwrap_or_default();
     }
 
     pub fn commit_auth(&mut self) {
+        let password = self.input_password.trim();
         self.worker_key = None;
-        self.input_worker_key.clear();
-        self.password = if self.input_password.trim().is_empty() {
-            None
-        } else {
-            Some(self.input_password.trim().to_string())
-        };
-        save_credentials(&self.worker_key, &self.password);
+        self.password = (!password.is_empty()).then(|| password.to_string());
+        save_credentials(None, self.password.as_deref());
         self.auth_mode = false;
-        self.status_msg = "Saved".to_string();
-        self.set_toast("Saved");
-        self.is_loading = true;
+        self.notify("Saved");
     }
 
     pub fn clear_credentials(&mut self) {
         self.worker_key = None;
         self.password = None;
-        self.input_worker_key.clear();
         self.input_password.clear();
-        delete_credentials();
-        self.status_msg = "Cleared".to_string();
-        self.set_toast("Cleared");
+        save_credentials(None, None);
+        self.notify("Cleared");
+    }
+
+    fn notify(&mut self, msg: &str) {
+        self.status_msg = msg.to_string();
+        self.set_toast(msg);
         self.is_loading = true;
     }
 
     pub fn realtime_uptime(&self) -> Option<u64> {
-        let (anchor_time, base_uptime) = self.uptime_anchor?;
-        let elapsed = anchor_time.elapsed().as_secs();
-        Some(base_uptime.saturating_add(elapsed))
+        let (anchor, base) = self.uptime_anchor?;
+        Some(base.saturating_add(anchor.elapsed().as_secs()))
     }
 
     pub fn apply_data(&mut self, data: RefreshData) {
         self.is_loading = false;
         self.is_unauthorized = data.is_unauthorized;
-        self.last_refresh = Some(data.timestamp);
 
         if let Some(stats) = data.stats {
-            let new_uptime = stats.uptime_seconds.unwrap_or(0);
-            match self.uptime_anchor {
-                Some((_, current_base)) => {
-                    let drift = (new_uptime as i64 - current_base as i64).abs();
-                    if drift > 5 || new_uptime < current_base {
-                        self.uptime_anchor = Some((Instant::now(), new_uptime));
-                    }
-                }
-                None => {
-                    self.uptime_anchor = Some((Instant::now(), new_uptime));
-                }
+            let uptime = stats.uptime_seconds.unwrap_or(0);
+            if self
+                .uptime_anchor
+                .is_none_or(|(_, base)| uptime < base || uptime.abs_diff(base) > 5)
+            {
+                self.uptime_anchor = Some((Instant::now(), uptime));
             }
             self.stats = Some(stats);
         }
 
-        if let Some(w) = data.workers
-            && self.workers != w
+        if let Some(workers) = data.workers
+            && self.workers != workers
         {
-            self.workers = w;
-            if self.selected_worker >= self.filtered_workers().len() {
-                self.selected_worker = self.filtered_workers().len().saturating_sub(1);
-            }
+            self.workers = workers;
+            self.clamp_selection();
         }
 
-        if let Some(h) = data.history
-            && self.history != h
+        if let Some(history) = data.history
+            && self.history != history
         {
-            self.history = h;
-            if self.selected_history >= self.filtered_history().len() {
-                self.selected_history = self.filtered_history().len().saturating_sub(1);
-            }
+            self.history = history;
+            self.clamp_selection();
         }
 
         self.latency_ms = data.latency_ms;
@@ -230,642 +224,382 @@ impl App {
         self.status_msg = if self.is_unauthorized {
             "Unauthorized".to_string()
         } else {
-            self.last_refresh
-                .map(|t| t.format("%H:%M:%S").to_string())
-                .unwrap_or_default()
+            data.timestamp.format("%H:%M:%S").to_string()
         };
     }
 
     pub fn filtered_workers(&self) -> Vec<&WorkerInfo> {
-        if self.search_query.is_empty() {
-            return self.workers.iter().collect();
-        }
-        let q = self.search_query.to_lowercase();
+        let query = self.search_query.to_lowercase();
         self.workers
             .iter()
             .filter(|w| {
-                w.id.as_deref().unwrap_or("").to_lowercase().contains(&q)
-                    || w.ip.as_deref().unwrap_or("").to_lowercase().contains(&q)
-                    || w.user_agent
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_lowercase()
-                        .contains(&q)
+                matches_query(
+                    &query,
+                    &[w.id.as_deref(), w.ip.as_deref(), w.user_agent.as_deref()],
+                )
             })
             .collect()
     }
 
     pub fn filtered_history(&self) -> Vec<&HistoryEntry> {
-        if self.search_query.is_empty() {
-            return self.history.iter().collect();
-        }
-        let q = self.search_query.to_lowercase();
+        let query = self.search_query.to_lowercase();
         self.history
             .iter()
             .filter(|h| {
-                h.student
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_lowercase()
-                    .contains(&q)
-                    || h.status
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_lowercase()
-                        .contains(&q)
-                    || h.hostname
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_lowercase()
-                        .contains(&q)
-                    || h.client_ip
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_lowercase()
-                        .contains(&q)
-                    || h.ip.as_deref().unwrap_or("").to_lowercase().contains(&q)
-                    || h.queue.as_deref().unwrap_or("").to_lowercase().contains(&q)
-                    || h.display_id().to_lowercase().contains(&q)
+                matches_query(
+                    &query,
+                    &[
+                        h.student.as_deref(),
+                        h.status.as_deref(),
+                        h.hostname.as_deref(),
+                        h.client_ip.as_deref(),
+                        h.ip.as_deref(),
+                        h.queue.as_deref(),
+                        Some(&h.display_id()),
+                    ],
+                )
             })
             .collect()
     }
 
-    pub fn next_item(&mut self) {
+    fn list_len(&self) -> usize {
         match self.tab {
-            Tab::Workers => {
-                let count = self.filtered_workers().len();
-                if count > 0 {
-                    self.selected_worker = (self.selected_worker + 1).min(count - 1);
-                }
-            }
-            Tab::History | Tab::Search => {
-                let count = self.filtered_history().len();
-                if count > 0 {
-                    self.selected_history = (self.selected_history + 1).min(count - 1);
-                }
+            Tab::Workers => self.filtered_workers().len(),
+            Tab::History | Tab::Search => self.filtered_history().len(),
+        }
+    }
+
+    fn selected(&self) -> usize {
+        match self.tab {
+            Tab::Workers => self.selected_worker,
+            Tab::History | Tab::Search => self.selected_history,
+        }
+    }
+
+    pub fn select(&mut self, index: usize) {
+        if index < self.list_len() {
+            match self.tab {
+                Tab::Workers => self.selected_worker = index,
+                Tab::History | Tab::Search => self.selected_history = index,
             }
         }
+    }
+
+    pub fn next_item(&mut self) {
+        self.select(self.selected() + 1);
     }
 
     pub fn prev_item(&mut self) {
-        match self.tab {
-            Tab::Workers => {
-                let count = self.filtered_workers().len();
-                if count > 0 {
-                    self.selected_worker = self.selected_worker.saturating_sub(1);
-                }
-            }
-            Tab::History | Tab::Search => {
-                let count = self.filtered_history().len();
-                if count > 0 {
-                    self.selected_history = self.selected_history.saturating_sub(1);
-                }
-            }
-        }
+        self.select(self.selected().saturating_sub(1));
+    }
+
+    pub fn reset_selection(&mut self) {
+        self.selected_worker = 0;
+        self.selected_history = 0;
+    }
+
+    fn clamp_selection(&mut self) {
+        let last_worker = self.filtered_workers().len().saturating_sub(1);
+        let last_history = self.filtered_history().len().saturating_sub(1);
+        self.selected_worker = self.selected_worker.min(last_worker);
+        self.selected_history = self.selected_history.min(last_history);
     }
 }
 
-#[derive(Clone, Default)]
+fn matches_query(query: &str, fields: &[Option<&str>]) -> bool {
+    query.is_empty()
+        || fields
+            .iter()
+            .flatten()
+            .any(|field| field.to_lowercase().contains(query))
+}
+
+#[derive(Default)]
+pub struct Cached<T> {
+    etag: Option<String>,
+    data: Option<T>,
+}
+
+impl<T: DeserializeOwned> Cached<T> {
+    async fn refresh(&mut self, client: &Client, headers: &HeaderMap, path: &str) -> bool {
+        let mut request = client
+            .get(format!("{DEFAULT_URL}{path}"))
+            .headers(headers.clone());
+        if let Some(etag) = &self.etag {
+            request = request.header(IF_NONE_MATCH, etag);
+        }
+        let Ok(response) = request.send().await else {
+            return false;
+        };
+        if response.status() == StatusCode::UNAUTHORIZED {
+            self.etag = None;
+            self.data = None;
+            return true;
+        }
+        if response.status().is_success() {
+            let etag = response
+                .headers()
+                .get(ETAG)
+                .and_then(|value| value.to_str().ok())
+                .map(String::from);
+            if let Ok(data) = response.json().await {
+                self.etag = etag;
+                self.data = Some(data);
+            }
+        }
+        false
+    }
+}
+
+#[derive(Default)]
 pub struct HttpCache {
-    pub etag_stats: Option<String>,
-    pub etag_workers: Option<String>,
-    pub etag_history: Option<String>,
-    pub stats: Option<PrintStats>,
-    pub workers: Option<Vec<WorkerInfo>>,
-    pub history: Option<Vec<HistoryEntry>>,
+    stats: Cached<PrintStats>,
+    workers: Cached<Vec<WorkerInfo>>,
+    history: Cached<Vec<HistoryEntry>>,
 }
 
 impl HttpCache {
-    pub fn clear(&mut self) {
-        self.etag_stats = None;
-        self.etag_workers = None;
-        self.etag_history = None;
-        self.stats = None;
-        self.workers = None;
-        self.history = None;
+    fn lengths(&self) -> (usize, usize) {
+        (
+            self.workers.data.as_ref().map_or(0, Vec::len),
+            self.history.data.as_ref().map_or(0, Vec::len),
+        )
+    }
+
+    fn last_job_at(&self) -> Option<u64> {
+        self.stats.data.as_ref().and_then(|s| s.last_job_at)
+    }
+
+    fn history_is_stale(&self, previous_last_job: Option<u64>) -> bool {
+        match (&self.stats.data, &self.history.data) {
+            (_, None) => true,
+            (Some(stats), Some(history)) => {
+                stats.history_count.unwrap_or(0) != history.len()
+                    || stats.last_job_at != previous_last_job
+            }
+            (None, Some(_)) => false,
+        }
+    }
+
+    async fn refresh_history(&mut self, client: &Client, headers: &HeaderMap) -> bool {
+        self.history
+            .refresh(client, headers, "/print/history")
+            .await
     }
 }
 
 fn config_path() -> PathBuf {
-    if let Some(home) = dirs::home_dir() {
-        return home.join(".config").join("preprinttui").join("creds.json");
-    }
-    dirs::config_dir()
+    dirs::home_dir()
+        .map(|home| home.join(".config"))
+        .or_else(dirs::config_dir)
         .unwrap_or_else(|| PathBuf::from("."))
         .join("preprinttui")
         .join("creds.json")
 }
 
-fn load_saved_credentials() -> (Option<String>, Option<String>) {
-    let mut key = None;
-    let mut pwd = None;
-
-    if let Ok(e) = Entry::new(KEYRING_SERVICE, KEYRING_WORKER_KEY)
-        && let Ok(k) = e.get_password()
-        && !k.trim().is_empty()
-    {
-        key = Some(k);
-    }
-
-    if let Ok(e) = Entry::new(KEYRING_SERVICE, KEYRING_PASSWORD)
-        && let Ok(p) = e.get_password()
-        && !p.trim().is_empty()
-    {
-        pwd = Some(p);
-    }
-
-    let p = config_path();
-    if (key.is_none() || pwd.is_none())
-        && let Ok(data) = std::fs::read_to_string(&p)
-        && let Ok(creds) = serde_json::from_str::<StoredCreds>(&data)
-    {
-        if key.is_none() {
-            key = creds.worker_key.filter(|s| !s.trim().is_empty());
-        }
-        if pwd.is_none() {
-            pwd = creds.password.filter(|s| !s.trim().is_empty());
-        }
-    }
-
-    (key, pwd)
+fn non_blank(value: Option<String>) -> Option<String> {
+    value.filter(|v| !v.trim().is_empty())
 }
 
-fn save_credentials(worker_key: &Option<String>, password: &Option<String>) {
-    if let Ok(e) = Entry::new(KEYRING_SERVICE, KEYRING_WORKER_KEY) {
-        match worker_key {
-            Some(k) if !k.trim().is_empty() => {
-                let _ = e.set_password(k);
-            }
-            _ => {
-                let _ = e.delete_credential();
-            }
-        }
-    }
+fn load_secret(name: &str) -> Option<String> {
+    non_blank(Entry::new(KEYRING_SERVICE, name).ok()?.get_password().ok())
+}
 
-    if let Ok(e) = Entry::new(KEYRING_SERVICE, KEYRING_PASSWORD) {
-        match password {
-            Some(p) if !p.trim().is_empty() => {
-                let _ = e.set_password(p);
-            }
-            _ => {
-                let _ = e.delete_credential();
-            }
-        }
+fn store_secret(name: &str, value: Option<&str>) {
+    if let Ok(entry) = Entry::new(KEYRING_SERVICE, name) {
+        let _ = match value.filter(|v| !v.trim().is_empty()) {
+            Some(v) => entry.set_password(v),
+            None => entry.delete_credential(),
+        };
     }
+}
 
-    let p = config_path();
-    if let Some(parent) = p.parent() {
+fn load_saved_credentials() -> (Option<String>, Option<String>) {
+    let stored: StoredCreds = std::fs::read_to_string(config_path())
+        .ok()
+        .and_then(|data| serde_json::from_str(&data).ok())
+        .unwrap_or_default();
+    (
+        load_secret(KEYRING_WORKER_KEY).or_else(|| non_blank(stored.worker_key)),
+        load_secret(KEYRING_PASSWORD).or_else(|| non_blank(stored.password)),
+    )
+}
+
+fn save_credentials(worker_key: Option<&str>, password: Option<&str>) {
+    store_secret(KEYRING_WORKER_KEY, worker_key);
+    store_secret(KEYRING_PASSWORD, password);
+
+    let path = config_path();
+    if worker_key.is_none() && password.is_none() {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+    if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-
-    if worker_key.is_some() || password.is_some() {
-        let creds = StoredCreds {
-            worker_key: worker_key.clone(),
-            password: password.clone(),
-        };
-        if let Ok(json) = serde_json::to_string(&creds) {
-            let _ = std::fs::write(&p, json);
-            #[cfg(unix)]
-            {
-                let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
-            }
-        }
-    } else if p.exists() {
-        let _ = std::fs::remove_file(&p);
+    let creds = StoredCreds {
+        worker_key: worker_key.map(String::from),
+        password: password.map(String::from),
+    };
+    if let Ok(json) = serde_json::to_string(&creds)
+        && std::fs::write(&path, json).is_ok()
+    {
+        #[cfg(unix)]
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
 }
 
-fn delete_credentials() {
-    if let Ok(e) = Entry::new(KEYRING_SERVICE, KEYRING_WORKER_KEY) {
-        let _ = e.delete_credential();
-    }
-    if let Ok(e) = Entry::new(KEYRING_SERVICE, KEYRING_PASSWORD) {
-        let _ = e.delete_credential();
-    }
-    let p = config_path();
-    if p.exists() {
-        let _ = std::fs::remove_file(&p);
-    }
-}
+fn make_headers(worker_key: Option<&str>, password: Option<&str>) -> HeaderMap {
+    let worker_key = worker_key.filter(|k| !k.trim().is_empty());
+    let password = password.filter(|p| !p.trim().is_empty());
+    let authorization = worker_key
+        .map(|key| format!("Bearer {}", make_jwt(key)))
+        .or_else(|| password.map(|pwd| format!("Basic {}", STANDARD.encode(format!(":{pwd}")))));
 
-fn make_headers(worker_key: &Option<String>, password: &Option<String>) -> HeaderMap {
-    let mut map = HeaderMap::new();
-    if let Some(key) = worker_key
-        && !key.trim().is_empty()
-    {
-        let jwt = make_jwt(key);
-        if let Ok(v) = HeaderValue::from_str(&format!("Bearer {jwt}")) {
-            map.insert("Authorization", v);
-        }
-        if let Ok(v) = HeaderValue::from_str(key) {
-            map.insert("X-Worker-Key", v);
-        }
-    }
-    if let Some(pwd) = password
-        && !pwd.trim().is_empty()
-    {
-        if !map.contains_key("Authorization")
-            && let Ok(v) =
-                HeaderValue::from_str(&format!("Basic {}", STANDARD.encode(format!(":{pwd}"))))
-        {
-            map.insert("Authorization", v);
-        }
-        if let Ok(v) = HeaderValue::from_str(pwd) {
-            map.insert("X-Print-Password", v);
-        }
-        if let Ok(v) = HeaderValue::from_str("preprinttui/1.0") {
-            map.insert("X-Worker-Ident", v);
-        }
-    }
-    map
-}
-
-async fn fetch_stats(
-    client: &reqwest::Client,
-    url: &str,
-    hdrs: &HeaderMap,
-    current_etag: Option<&str>,
-    cached_stats: Option<&PrintStats>,
-) -> (Option<String>, Option<PrintStats>, bool) {
-    let mut req_hdrs = hdrs.clone();
-    if let Some(etag) = current_etag
-        && let Ok(val) = HeaderValue::from_str(etag)
-    {
-        req_hdrs.insert(reqwest::header::IF_NONE_MATCH, val);
-    }
-
-    if let Ok(resp) = client
-        .get(format!("{url}/print/stats"))
-        .headers(req_hdrs)
-        .send()
-        .await
-    {
-        if resp.status() == StatusCode::UNAUTHORIZED {
-            return (None, None, true);
-        }
-        if resp.status() == StatusCode::NOT_MODIFIED {
-            return (current_etag.map(String::from), cached_stats.cloned(), false);
-        }
-        if resp.status().is_success() {
-            let mut new_etag = None;
-            if let Some(etag_hdr) = resp.headers().get(reqwest::header::ETAG)
-                && let Ok(etag_str) = etag_hdr.to_str()
-            {
-                new_etag = Some(etag_str.to_string());
-            }
-            if let Ok(s) = resp.json::<PrintStats>().await {
-                return (new_etag, Some(s), false);
-            }
-        }
-    }
-    (current_etag.map(String::from), cached_stats.cloned(), false)
-}
-
-async fn fetch_workers(
-    client: &reqwest::Client,
-    url: &str,
-    hdrs: &HeaderMap,
-    current_etag: Option<&str>,
-    cached_workers: Option<&[WorkerInfo]>,
-) -> (Option<String>, Option<Vec<WorkerInfo>>, bool) {
-    let mut req_hdrs = hdrs.clone();
-    if let Some(etag) = current_etag
-        && let Ok(val) = HeaderValue::from_str(etag)
-    {
-        req_hdrs.insert(reqwest::header::IF_NONE_MATCH, val);
-    }
-
-    if let Ok(resp) = client
-        .get(format!("{url}/print/active"))
-        .headers(req_hdrs)
-        .send()
-        .await
-    {
-        if resp.status() == StatusCode::UNAUTHORIZED {
-            return (None, Some(Vec::new()), true);
-        }
-        if resp.status() == StatusCode::NOT_MODIFIED {
-            return (
-                current_etag.map(String::from),
-                cached_workers.map(|v| v.to_vec()),
-                false,
-            );
-        }
-        if resp.status().is_success() {
-            let mut new_etag = None;
-            if let Some(etag_hdr) = resp.headers().get(reqwest::header::ETAG)
-                && let Ok(etag_str) = etag_hdr.to_str()
-            {
-                new_etag = Some(etag_str.to_string());
-            }
-            if let Ok(w) = resp.json::<Vec<WorkerInfo>>().await {
-                return (new_etag, Some(w), false);
-            }
-        }
-    }
-    (
-        current_etag.map(String::from),
-        cached_workers.map(|v| v.to_vec()),
-        false,
-    )
-}
-
-async fn fetch_history(
-    client: &reqwest::Client,
-    url: &str,
-    hdrs: &HeaderMap,
-    current_etag: Option<&str>,
-    cached_history: Option<&[HistoryEntry]>,
-) -> (Option<String>, Option<Vec<HistoryEntry>>, bool) {
-    let mut req_hdrs = hdrs.clone();
-    if let Some(etag) = current_etag
-        && let Ok(val) = HeaderValue::from_str(etag)
-    {
-        req_hdrs.insert(reqwest::header::IF_NONE_MATCH, val);
-    }
-
-    if let Ok(resp) = client
-        .get(format!("{url}/print/history"))
-        .headers(req_hdrs)
-        .send()
-        .await
-    {
-        if resp.status() == StatusCode::UNAUTHORIZED {
-            return (None, Some(Vec::new()), true);
-        }
-        if resp.status() == StatusCode::NOT_MODIFIED {
-            return (
-                current_etag.map(String::from),
-                cached_history.map(|v| v.to_vec()),
-                false,
-            );
-        }
-        if resp.status().is_success() {
-            let mut new_etag = None;
-            if let Some(etag_hdr) = resp.headers().get(reqwest::header::ETAG)
-                && let Ok(etag_str) = etag_hdr.to_str()
-            {
-                new_etag = Some(etag_str.to_string());
-            }
-            if let Ok(h) = resp.json::<Vec<HistoryEntry>>().await {
-                return (new_etag, Some(h), false);
-            }
-        }
-    }
-    (
-        current_etag.map(String::from),
-        cached_history.map(|v| v.to_vec()),
-        false,
-    )
+    [
+        ("authorization", authorization),
+        ("x-worker-key", worker_key.map(String::from)),
+        ("x-print-password", password.map(String::from)),
+        (
+            "x-worker-ident",
+            password.map(|_| "preprinttui/1.0".to_string()),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(name, value)| {
+        Some((
+            HeaderName::from_static(name),
+            HeaderValue::from_str(&value?).ok()?,
+        ))
+    })
+    .collect()
 }
 
 pub async fn fetch_update(
-    client: &reqwest::Client,
+    client: &Client,
     tab: Tab,
-    worker_key: &Option<String>,
-    password: &Option<String>,
+    worker_key: Option<&str>,
+    password: Option<&str>,
     cache: &mut HttpCache,
 ) -> RefreshData {
     let start = Instant::now();
-    let prev_history_len = cache.history.as_ref().map(|h| h.len()).unwrap_or(0);
-    let prev_workers_len = cache.workers.as_ref().map(|w| w.len()).unwrap_or(0);
-    let prev_last_job = cache.stats.as_ref().and_then(|s| s.last_job_at);
-    let hdrs = make_headers(worker_key, password);
-    let url = DEFAULT_URL.trim_end_matches('/');
+    let previous_lengths = cache.lengths();
+    let previous_last_job = cache.last_job_at();
+    let headers = make_headers(worker_key, password);
 
-    let (stats_etag, stats_data, stats_unauth) = fetch_stats(
-        client,
-        url,
-        &hdrs,
-        cache.etag_stats.as_deref(),
-        cache.stats.as_ref(),
-    )
-    .await;
-    cache.etag_stats = stats_etag;
-    cache.stats = stats_data.clone();
-
-    let history_changed = match (&stats_data, &cache.history) {
-        (_, None) => true,
-        (Some(s), Some(h)) => {
-            s.history_count.unwrap_or(0) != h.len() || s.last_job_at != prev_last_job
-        }
-        _ => false,
-    };
-
-    let (workers, history, unauth) = match tab {
-        Tab::Workers => {
-            let (w_etag, w_data, w_unauth) = fetch_workers(
-                client,
-                url,
-                &hdrs,
-                cache.etag_workers.as_deref(),
-                cache.workers.as_deref(),
-            )
+    let mut unauthorized = cache.stats.refresh(client, &headers, "/print/stats").await;
+    let history_stale = cache.history_is_stale(previous_last_job);
+    if tab != Tab::History {
+        unauthorized |= cache
+            .workers
+            .refresh(client, &headers, "/print/active")
             .await;
-            cache.etag_workers = w_etag;
-            cache.workers = w_data.clone();
-            (w_data, cache.history.clone(), stats_unauth || w_unauth)
-        }
-        Tab::History => {
-            let (h_data, h_unauth) = if history_changed {
-                let (h_etag, h_data, h_unauth) = fetch_history(
-                    client,
-                    url,
-                    &hdrs,
-                    cache.etag_history.as_deref(),
-                    cache.history.as_deref(),
-                )
-                .await;
-                cache.etag_history = h_etag;
-                cache.history = h_data.clone();
-                (h_data, h_unauth)
-            } else {
-                (cache.history.clone(), false)
-            };
-            (cache.workers.clone(), h_data, stats_unauth || h_unauth)
-        }
-        Tab::Search => {
-            let (w_etag, w_data, w_unauth) = fetch_workers(
-                client,
-                url,
-                &hdrs,
-                cache.etag_workers.as_deref(),
-                cache.workers.as_deref(),
-            )
-            .await;
-            cache.etag_workers = w_etag;
-            cache.workers = w_data.clone();
+    }
+    if tab != Tab::Workers && history_stale {
+        unauthorized |= cache.refresh_history(client, &headers).await;
+    }
 
-            let (h_data, h_unauth) = if history_changed {
-                let (h_etag, h_data, h_unauth) = fetch_history(
-                    client,
-                    url,
-                    &hdrs,
-                    cache.etag_history.as_deref(),
-                    cache.history.as_deref(),
-                )
-                .await;
-                cache.etag_history = h_etag;
-                cache.history = h_data.clone();
-                (h_data, h_unauth)
-            } else {
-                (cache.history.clone(), false)
-            };
-
-            (w_data, h_data, stats_unauth || w_unauth || h_unauth)
-        }
+    let (workers, history) = if unauthorized {
+        (Some(Vec::new()), Some(Vec::new()))
+    } else {
+        (cache.workers.data.clone(), cache.history.data.clone())
     };
-
-    let latency_ms = Some(start.elapsed().as_millis() as u64);
-    let has_new_data = cache.history.as_ref().map(|h| h.len()).unwrap_or(0) != prev_history_len
-        || cache.workers.as_ref().map(|w| w.len()).unwrap_or(0) != prev_workers_len;
+    let has_new_data = cache.lengths() != previous_lengths;
 
     RefreshData {
-        stats: stats_data,
-        workers,
-        history,
-        is_unauthorized: unauth,
-        timestamp: Local::now(),
-        latency_ms,
-        has_new_data,
+        is_unauthorized: unauthorized,
+        latency_ms: Some(u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)),
+        ..RefreshData::new(cache.stats.data.clone(), workers, history, has_new_data)
+    }
+}
+
+fn parse_event(message: &str) -> (&str, String) {
+    let mut name = "message";
+    let mut data = String::new();
+    for line in message.lines() {
+        if let Some(rest) = line.strip_prefix("event:") {
+            name = rest.trim();
+        } else if let Some(rest) = line.strip_prefix("data:") {
+            data.push_str(rest.trim());
+        }
+    }
+    (name, data)
+}
+
+async fn handle_event(
+    client: &Client,
+    headers: &HeaderMap,
+    cache: &mut HttpCache,
+    message: &str,
+) -> Option<RefreshData> {
+    let (name, data) = parse_event(message);
+    if data.is_empty() {
+        return None;
+    }
+
+    match name {
+        "init" => {
+            let init: SseInit = serde_json::from_str(&data).ok()?;
+            cache.stats.data.clone_from(&init.stats);
+            cache.workers.data.clone_from(&init.workers);
+            Some(RefreshData::new(init.stats, init.workers, None, true))
+        }
+        "stats" => {
+            let stats: PrintStats = serde_json::from_str(&data).ok()?;
+            let has_new_job = stats.last_job_at != cache.last_job_at();
+            cache.stats.data = Some(stats.clone());
+            let history = if has_new_job {
+                cache.refresh_history(client, headers).await;
+                cache.history.data.clone()
+            } else {
+                None
+            };
+            Some(RefreshData::new(Some(stats), None, history, has_new_job))
+        }
+        "workers" => {
+            let workers: Vec<WorkerInfo> = serde_json::from_str(&data).ok()?;
+            cache.workers.data = Some(workers.clone());
+            Some(RefreshData::new(None, Some(workers), None, true))
+        }
+        "job_queued" | "job_claimed" => {
+            cache.refresh_history(client, headers).await;
+            Some(RefreshData::new(
+                cache.stats.data.clone(),
+                None,
+                cache.history.data.clone(),
+                true,
+            ))
+        }
+        _ => None,
     }
 }
 
 pub async fn read_events(
-    client: &reqwest::Client,
-    worker_key: &Option<String>,
-    password: &Option<String>,
-    tx_data: &tokio::sync::mpsc::UnboundedSender<RefreshData>,
+    client: &Client,
+    worker_key: Option<&str>,
+    password: Option<&str>,
+    tx_data: &UnboundedSender<RefreshData>,
     cache: &mut HttpCache,
-) -> Result<(), anyhow::Error> {
-    let hdrs = make_headers(worker_key, password);
-    let url = DEFAULT_URL.trim_end_matches('/');
-    let sse_url = format!("{url}/print/events");
+) -> anyhow::Result<()> {
+    let headers = make_headers(worker_key, password);
+    let mut response = client
+        .get(format!("{DEFAULT_URL}/print/events"))
+        .headers(headers.clone())
+        .send()
+        .await?;
 
-    let mut res = client.get(&sse_url).headers(hdrs.clone()).send().await?;
-
-    if res.status() == StatusCode::UNAUTHORIZED {
-        let _ = tx_data.send(RefreshData {
-            stats: None,
-            workers: None,
-            history: None,
-            is_unauthorized: true,
-            timestamp: Local::now(),
-            latency_ms: None,
-            has_new_data: false,
-        });
+    if response.status() == StatusCode::UNAUTHORIZED {
+        let _ = tx_data.send(RefreshData::unauthorized());
         return Ok(());
     }
 
-    let mut buf = String::new();
-
-    while let Some(chunk) = res.chunk().await? {
-        let chunk_str = String::from_utf8_lossy(&chunk);
-        buf.push_str(&chunk_str);
-
-        while let Some(pos) = buf.find("\n\n") {
-            let msg = buf[..pos].to_string();
-            buf.drain(..pos + 2);
-
-            let mut event_name = "message";
-            let mut event_data = String::new();
-
-            for line in msg.lines() {
-                if let Some(rest) = line.strip_prefix("event:") {
-                    event_name = rest.trim();
-                } else if let Some(rest) = line.strip_prefix("data:") {
-                    event_data.push_str(rest.trim());
-                }
-            }
-
-            if event_data.is_empty() {
-                continue;
-            }
-
-            match event_name {
-                "init" => {
-                    if let Ok(init) = serde_json::from_str::<SseInit>(&event_data) {
-                        cache.stats = init.stats.clone();
-                        cache.workers = init.workers.clone();
-                        let _ = tx_data.send(RefreshData {
-                            stats: init.stats,
-                            workers: init.workers,
-                            history: None,
-                            is_unauthorized: false,
-                            timestamp: Local::now(),
-                            latency_ms: Some(0),
-                            has_new_data: true,
-                        });
-                    }
-                }
-                "stats" => {
-                    if let Ok(stats) = serde_json::from_str::<PrintStats>(&event_data) {
-                        let prev_jobs = cache.stats.as_ref().and_then(|s| s.last_job_at);
-                        let need_hist = stats.last_job_at != prev_jobs;
-                        cache.stats = Some(stats.clone());
-
-                        let hist_data = if need_hist {
-                            let (_, h, _) = fetch_history(
-                                client,
-                                url,
-                                &hdrs,
-                                cache.etag_history.as_deref(),
-                                cache.history.as_deref(),
-                            )
-                            .await;
-                            cache.history = h.clone();
-                            h
-                        } else {
-                            None
-                        };
-
-                        let _ = tx_data.send(RefreshData {
-                            stats: Some(stats),
-                            workers: None,
-                            history: hist_data,
-                            is_unauthorized: false,
-                            timestamp: Local::now(),
-                            latency_ms: Some(0),
-                            has_new_data: need_hist,
-                        });
-                    }
-                }
-                "workers" => {
-                    if let Ok(workers) = serde_json::from_str::<Vec<WorkerInfo>>(&event_data) {
-                        cache.workers = Some(workers.clone());
-                        let _ = tx_data.send(RefreshData {
-                            stats: None,
-                            workers: Some(workers),
-                            history: None,
-                            is_unauthorized: false,
-                            timestamp: Local::now(),
-                            latency_ms: Some(0),
-                            has_new_data: true,
-                        });
-                    }
-                }
-                "job_queued" | "job_claimed" => {
-                    let (_, h, _) = fetch_history(
-                        client,
-                        url,
-                        &hdrs,
-                        cache.etag_history.as_deref(),
-                        cache.history.as_deref(),
-                    )
-                    .await;
-                    cache.history = h.clone();
-
-                    let _ = tx_data.send(RefreshData {
-                        stats: cache.stats.clone(),
-                        workers: None,
-                        history: h,
-                        is_unauthorized: false,
-                        timestamp: Local::now(),
-                        latency_ms: Some(0),
-                        has_new_data: true,
-                    });
-                }
-                _ => {}
+    let mut buffer = String::new();
+    while let Some(chunk) = response.chunk().await? {
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(end) = buffer.find("\n\n") {
+            let message: String = buffer.drain(..end + 2).collect();
+            if let Some(update) = handle_event(client, &headers, cache, &message).await {
+                let _ = tx_data.send(update);
             }
         }
     }
