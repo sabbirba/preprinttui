@@ -58,9 +58,16 @@ fn fmt_dur(s: u64) -> String {
     }
 }
 
+fn to_millis(ts: u64) -> u64 {
+    if ts < 10_000_000_000 {
+        ts.saturating_mul(1000)
+    } else {
+        ts
+    }
+}
+
 fn fmt_ts(ts: u64) -> String {
-    let ms = if ts < 10_000_000_000 { ts * 1000 } else { ts };
-    i64::try_from(ms)
+    i64::try_from(to_millis(ts))
         .ok()
         .filter(|_| ts != 0)
         .and_then(DateTime::from_timestamp_millis)
@@ -447,15 +454,28 @@ fn render_table<T>(
     }
 }
 
+fn now_millis() -> u64 {
+    u64::try_from(Local::now().timestamp_millis()).unwrap_or(0)
+}
+
 fn worker_uptime(worker: &WorkerInfo) -> String {
-    let now_ms = u64::try_from(Local::now().timestamp_millis()).unwrap_or(0);
     worker.connected_at.map_or_else(
         || "-".to_string(),
-        |t| fmt_dur(now_ms.saturating_sub(t) / 1000),
+        |t| fmt_dur(now_millis().saturating_sub(t) / 1000),
     )
 }
 
-fn worker_columns() -> [Column<WorkerInfo>; 7] {
+fn worker_last_check(worker: &WorkerInfo) -> String {
+    worker.last_update_checked.filter(|&t| t != 0).map_or_else(
+        || "never".to_string(),
+        |t| {
+            let age = now_millis().saturating_sub(to_millis(t)) / 1000;
+            format!("{} ago", fmt_dur(age))
+        },
+    )
+}
+
+fn worker_columns() -> [Column<WorkerInfo>; 8] {
     [
         Column {
             min_width: 0,
@@ -474,6 +494,12 @@ fn worker_columns() -> [Column<WorkerInfo>; 7] {
             title: "AGENT",
             width: Constraint::Fill(22),
             cell: |w| Span::styled(or_dash(w.user_agent.as_deref()), DIM),
+        },
+        Column {
+            min_width: 90,
+            title: "CHECKED",
+            width: Constraint::Fill(10),
+            cell: |w| Span::styled(worker_last_check(w), DIM),
         },
         Column {
             min_width: 0,

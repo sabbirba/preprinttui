@@ -26,6 +26,7 @@ pub struct WorkerInfo {
     pub jobs_completed: Option<usize>,
     pub connected_at: Option<u64>,
     pub last_seen_at: Option<u64>,
+    pub last_update_checked: Option<u64>,
     pub connections: Option<usize>,
     pub status: Option<String>,
 }
